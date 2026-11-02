@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thesis Ledger · planner</title>
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+
+<header class="masthead">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="3.25" y="4.75" width="17.5" height="15.5" rx="1.4"/>
+        <path d="M3.25 9.25h17.5M8 4.75v-2M16 4.75v-2"/>
+        <path d="M7 13h4.2v4.2H7z" fill="currentColor" stroke="none" opacity=".85"/>
+      </svg>
+    </span>
+    <span class="brand-word">Thesis <em>Ledger</em></span>
+  </div>
+
+  <nav class="weeknav" aria-label="Week navigation">
+    <button class="iconbtn" data-week="-1" title="Previous week" aria-label="Previous week">‹</button>
+    <div class="weeknav-label">
+      <span class="weeknum" id="week-num">W—</span>
+      <span class="weekrange" id="week-range">—</span>
+    </div>
+    <button class="iconbtn" data-week="1" title="Next week" aria-label="Next week">›</button>
+    <button class="ghostbtn" id="week-today">Today</button>
+    <button class="themebtn" id="theme" title="Theme: auto" aria-label="Toggle theme">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+        <circle cx="12" cy="12" r="4.2"/>
+        <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2l-2.1 2.1M7.3 16.7l-2.1 2.1"/>
+      </svg>
+    </button>
+  </nav>
+
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" data-view="week" aria-selected="true" class="tab">Week</button>
+    <button role="tab" data-view="tasks" aria-selected="false" class="tab">Tasks</button>
+    <button role="tab" data-view="habits" aria-selected="false" class="tab">Habits</button>
+    <button role="tab" data-view="calibration" aria-selected="false" class="tab">Calibration</button>
+  </nav>
+
+  <div class="statusline" id="statusline" aria-live="polite"></div>
+</header>
+
+<aside class="rail" aria-label="Today">
+  <div class="rail-head">
+    <span class="eyebrow">Today</span>
+    <h2 id="rail-date">—</h2>
+    <p class="rail-sub" id="rail-sub">—</p>
+  </div>
+  <div id="rail-timeline" class="rail-timeline"></div>
+  <div class="rail-foot" id="rail-foot"></div>
+</aside>
+
+<main class="page">
+  <section class="view" id="view-week" aria-labelledby="week-title">
+    <h1 class="sr-only" id="week-title">Week plan</h1>
+
+    <form class="intake" id="intake" autocomplete="off">
+      <label class="eyebrow" for="intake-text">What needs doing</label>
+      <div class="intake-row">
+        <textarea id="intake-text" rows="2"
+          placeholder="create an audit for coreference resolution"
+          spellcheck="false"></textarea>
+        <button type="submit" class="primary" id="intake-go">
+          <span>Plan it</span>
+        </button>
+      </div>
+      <p class="intake-options">
+        <select id="intake-category" aria-label="Which folder grounds this task">
+          <option value="" selected>Thesis</option>
+        </select>
+        <select id="intake-mode" aria-label="Who estimates this task">
+          <option value="api" selected>Instant estimate (LLM)</option>
+          <option value="offline">Offline estimate only</option>
+        </select>
+        <select id="intake-within" aria-label="Weeks the planner may use">
+          <option value="1" selected>within 1 week</option>
+          <option value="2">within 2 weeks</option>
+          <option value="3">within 3 weeks</option>
+          <option value="4">within 4 weeks</option>
+          <option value="8">within 8 weeks</option>
+          <option value="">any week</option>
+        </select>
+      </p>
+      <p class="intake-hint">
+        Reads the repository, estimates the work, finds the slot.
+        <kbd>n</kbd> to focus · <kbd>⌘⏎</kbd> to plan
+      </p>
+      <div class="analysis" id="analysis" hidden aria-live="polite"></div>
+    </form>
+
+    <div class="ledger" id="ledger"></div>
+    <p class="ledger-empty" id="ledger-empty" hidden>
+      Nothing planned this week yet — describe a task above and it lands here.
+    </p>
+  </section>
+
+  <section class="view" id="view-tasks" hidden aria-labelledby="tasks-title">
+    <h1 class="sr-only" id="tasks-title">Tasks</h1>
+    <p class="tasks-tools">
+      <button class="pill" id="past-toggle" type="button">+ past task</button>
+      <span class="tasks-tools-hint">register work done before this app — counts for the totals and calibration</span>
+    </p>
+    <form id="past-form" hidden class="past-form">
+      <input type="text" id="past-title" placeholder="what was it?" autocomplete="off">
+      <input type="text" id="past-area" placeholder="area" autocomplete="off" style="max-width:120px">
+      <input type="number" id="past-est" min="1" placeholder="est. min" style="max-width:90px">
+      <input type="number" id="past-actual" min="1" placeholder="real min" required style="max-width:90px">
+      <input type="date" id="past-done" title="when it was finished" style="max-width:150px">
+      <button class="primary" type="submit">Save</button>
+      <span class="past-msg" id="past-msg"></span>
+    </form>
+    <div class="tasklist" id="tasklist"></div>
+  </section>
+
+  <section class="view" id="view-habits" hidden aria-labelledby="habits-title">
+    <h1 class="sr-only" id="habits-title">Habits</h1>
+    <div class="habits" id="habits"></div>
+  </section>
+
+  <section class="view" id="view-calibration" hidden aria-labelledby="cal-title">
+    <h1 class="sr-only" id="cal-title">Calibration</h1>
+    <div class="calibration" id="calibration"></div>
+  </section>
+</main>
+
+<div class="drawer-scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="Task detail" role="dialog" aria-modal="true"></aside>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

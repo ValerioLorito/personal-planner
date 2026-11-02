@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Planner — Agentic Planner</title>
+  <link rel="stylesheet" href="app.css?v=20261102b">
+</head>
+<body class="theme-ink">
+  <header class="app-header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-mark"><i></i></span>
+        <span class="logo-text">Planner</span>
+      </div>
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-tab="schedule">Schedule</button>
+        <button class="nav-tab" data-tab="tasks">Tasks <span class="badge" id="task-count">0</span></button>
+        <button class="nav-tab" data-tab="habits">Habits <span class="badge" id="habit-count">0</span></button>
+        <button class="nav-tab" data-tab="proposals">Inbox <span class="badge badge-alert" id="proposal-count" style="display:none">0</span></button>
+        <button class="nav-tab" data-tab="memory">Memory</button>
+      </nav>
+    </div>
+    <div class="header-right">
+      <div class="status-pill status-pill-clickable" id="theme-toggle" title="Switch theme: Ledger (light) / Ink (dark) / Midnight">
+        <span class="status-label" id="theme-toggle-label">Ink</span>
+      </div>
+      <div class="status-pill" id="cal-status" title="Apple Calendar Connection">
+        <span class="status-dot"></span>
+        <span class="status-label">Calendar</span>
+      </div>
+      <div class="status-pill status-pill-clickable" id="ai-status" title="Click to configure AI Provider & Model (Gemini / OpenRouter)">
+        <span class="status-label" id="ai-budget-text">AI 0/50</span>
+      </div>
+      <div class="status-pill" id="live-status" title="Real-time EventKit Stream">
+        <span class="pulse-dot"></span>
+        <span class="status-label">Live</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Banner for Calendar permission if restricted -->
+  <div class="banner banner-warning" id="perm-banner" style="display:none">
+    <span>Apple Calendar full access is required to read your schedule in real time.</span>
+    <button class="btn btn-sm btn-primary" id="btn-request-cal">Grant Calendar Access</button>
+  </div>
+
+  <main class="app-main">
+    <!-- VIEW 1: SCHEDULE / WEEK -->
+    <section class="view active" id="view-schedule">
+      <div class="view-toolbar">
+        <div class="toolbar-left">
+          <button class="btn btn-icon" id="week-prev" title="Previous Week">‹</button>
+          <button class="btn btn-secondary btn-sm" id="week-today">Today</button>
+          <button class="btn btn-icon" id="week-next" title="Next Week">›</button>
+          <button class="btn btn-secondary btn-sm" id="week-refresh" title="Refresh iCloud, Google & University Calendars">↻ Sync</button>
+          <span class="toolbar-title" id="week-label">Week</span>
+        </div>
+        <div class="toolbar-right">
+          <label class="toggle-label"><input type="checkbox" id="toggle-habits" checked> Show Habits</label>
+          <label class="toggle-label"><input type="checkbox" id="toggle-meetings" checked> Inherited Calendars</label>
+        </div>
+      </div>
+      <div class="schedule-container">
+        <div class="schedule-sidebar">
+          <div class="sidebar-card">
+            <h3>Today</h3>
+            <div id="today-stats" class="today-stats">--</div>
+            <div id="today-timeline" class="today-timeline"></div>
+          </div>
+          <div class="sidebar-card">
+            <h3>Incoming Commitments & Deadlines</h3>
+            <div id="pi-meeting-info" class="pi-info">No upcoming commitments</div>
+          </div>
+          <div class="sidebar-card">
+            <h3>Inherited Calendars (iCloud / Google)</h3>
+            <div id="inherited-calendars-list" class="inherited-cals-list"></div>
+          </div>
+        </div>
+        <div class="schedule-grid-wrap">
+          <div class="schedule-grid" id="week-grid">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 2: TASKS -->
+    <section class="view" id="view-tasks">
+      <div class="tasks-layout">
+        <div class="tasks-left">
+          <div class="card intake-card">
+            <h2>Plan or Reschedule Tasks with AI</h2>
+            <p class="card-desc">Describe a new task to plan from your folders, or ask the agent to move, reschedule, or edit any existing task (e.g. <em>"Move Quiz 3 to Friday at 15:00"</em> or <em>"Reschedule Assignment 1 to Thursday afternoon"</em>).</p>
+            <div class="intake-form">
+              <div class="form-row">
+                <input type="text" id="task-input" class="input-text" placeholder="e.g. Plan HW1 for Hybrid Quantum, or 'Move Attempt Quiz 3 to Friday 15:00'..." autocomplete="off">
+              </div>
+              <div class="form-row form-row-opts">
+                <div class="form-group">
+                  <label>Category</label>
+                  <select id="task-category" class="select">
+                    <option value="">Auto-detect category / Edit existing task</option>
+                    <option value="thesis">Thesis (commonsense-atlas)</option>
+                  </select>
+                </div>
+                <button class="btn btn-primary btn-plan" id="btn-plan-task">
+                  <span class="btn-text">Ask Task Agent</span>
+                  <span class="btn-spinner" style="display:none"></span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Live Streaming Agent Trace -->
+            <div class="agent-trace-box" id="intake-trace-box" style="display:none">
+              <div class="trace-header">
+                <span class="trace-title">Agent Reasoning & File Inspection</span>
+                <span class="trace-status" id="trace-status">Thinking...</span>
+              </div>
+              <div class="trace-steps" id="trace-steps"></div>
+            </div>
+          </div>
+
+          <!-- Tasks Lists -->
+          <div class="tasks-lists">
+            <div class="section-header">
+              <h2>Active Tasks</h2>
+              <div class="filter-group">
+                <button class="filter-btn active" data-filter="all">All</button>
+                <button class="filter-btn" data-filter="draft">Drafts</button>
+                <button class="filter-btn" data-filter="scheduled">Scheduled</button>
+                <button class="filter-btn" data-filter="done">Completed</button>
+              </div>
+            </div>
+            <div class="task-cards-list" id="tasks-container">
+              <!-- Rendered by JS -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Task Detail Drawer -->
+        <div class="tasks-right" id="task-drawer" style="display:none">
+          <div class="drawer-header">
+            <span class="drawer-cat" id="drawer-cat">Thesis</span>
+            <div style="display:flex;gap:6px;align-items:center">
+              <button class="btn btn-sm btn-secondary" id="drawer-btn-deadline" title="Edit task deadline">📅 Deadline</button>
+              <button class="btn btn-sm btn-secondary" id="drawer-btn-rename">✎ Rename</button>
+              <button class="btn-icon" id="drawer-close">✕</button>
+            </div>
+          </div>
+          <h2 id="drawer-title" class="drawer-title">Task Title</h2>
+          <div class="drawer-badges" id="drawer-badges"></div>
+          <div class="drawer-summary" id="drawer-summary"></div>
+
+          <div class="drawer-section">
+            <h4>Ask AI to Adjust Date / Time of This Task</h4>
+            <div class="feedback-row">
+              <input type="text" id="drawer-ai-input" class="input-sm flex-1" placeholder="e.g. Move to Friday at 15:00, or reschedule to mornings..." autocomplete="off">
+              <button class="btn btn-sm btn-primary" id="btn-drawer-ai">Adjust with AI</button>
+            </div>
+          </div>
+          
+          <div class="drawer-section" id="drawer-files-sec">
+            <h4>Files Grounded & Read</h4>
+            <div id="drawer-files" class="files-chips"></div>
+          </div>
+
+          <div class="drawer-section">
+            <h4>Subtasks Breakdown</h4>
+            <div id="drawer-subtasks" class="subtasks-list"></div>
+          </div>
+
+          <div class="drawer-section">
+            <h4>Scheduled Calendar Blocks</h4>
+            <div id="drawer-blocks" class="blocks-list"></div>
+          </div>
+
+          <div class="drawer-section drawer-feedback-sec">
+            <h4>How long did it really take? (Recalibrate)</h4>
+            <div class="feedback-row">
+              <input type="number" id="feedback-minutes" class="input-sm" placeholder="Minutes">
+              <input type="text" id="feedback-note" class="input-sm flex-1" placeholder="Note (optional)">
+              <button class="btn btn-sm btn-secondary" id="btn-save-feedback">Save & Recalibrate</button>
+            </div>
+          </div>
+
+          <div class="drawer-actions">
+            <button class="btn btn-primary" id="drawer-btn-schedule">Schedule in Calendar</button>
+            <button class="btn btn-danger" id="drawer-btn-delete">✕ Delete Task</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 3: HABITS -->
+    <section class="view" id="view-habits">
+      <div class="habits-layout">
+        <div class="habits-chat-col">
+          <div class="card habits-chat-card">
+            <div class="chat-header">
+              <h2>Habits & Routines Agent</h2>
+              <span class="chat-sub">Learns your weekly commitments, recalibrates duration, and manages Apple Calendar.</span>
+            </div>
+            <div class="chat-scroll-wrap">
+              <div class="chat-messages" id="habits-chat-messages">
+                <div class="chat-bubble chat-agent">
+                  Hello! I manage your recurring commitments on the <strong>Habits</strong> calendar. Tell me what you repeat each week, or let me know if a habit took more or less time so I can recalibrate!
+                </div>
+              </div>
+              <button class="chat-jump" id="habits-chat-jump" type="button">↓ Latest messages</button>
+            </div>
+            <div class="quick-chips">
+              <button class="chip" data-msg="Gym workout Mon, Wed, Fri from 19:00 to 20:30">Gym Mon/Wed/Fri 19:00–20:30</button>
+              <button class="chip" data-msg="Reading papers every morning from 08:30 to 09:15">Daily reading 08:30 (45m)</button>
+              <button class="chip" data-msg="Gym workout took 60m today instead of 90m, please recalibrate">Recalibrate gym: took 60m</button>
+              <button class="chip" data-msg="Sync my habits with the Habits calendar">Resync calendar</button>
+            </div>
+            <div class="chat-input-bar">
+              <input type="text" class="input-text" id="habits-chat-input" placeholder="Talk with habit agent..." autocomplete="off">
+              <button class="btn btn-primary" id="btn-send-habit-chat">Send</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="habits-list-col">
+          <div class="card habits-card">
+            <div class="habits-header">
+              <div>
+                <h2>Active Recurring Habits</h2>
+                <p class="card-desc">Mirrored in the 'Habits' calendar. Deleting a habit cleanly wipes the entire recurring series.</p>
+              </div>
+              <div class="habits-actions">
+                <button class="btn btn-secondary btn-sm" id="btn-resync-habits">Resync with Calendar</button>
+                <button class="btn btn-primary btn-sm" id="btn-new-habit">+ New Habit</button>
+              </div>
+            </div>
+            <div class="habits-list" id="habits-list">
+              <!-- Rendered by JS -->
+            </div>
+          </div>
+
+          <div class="card habits-history-card">
+            <h2>Recent Check-ins & Consistency</h2>
+            <div class="habit-logs-list" id="habit-logs-list">
+              <!-- Rendered by JS -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 4: PROPOSALS INBOX -->
+    <section class="view" id="view-proposals">
+      <div class="card proposals-card">
+        <div class="proposals-header">
+          <div>
+            <h2>Real-time Calendar Watcher Inbox</h2>
+            <p class="card-desc">When external meetings move or conflict with planned blocks, the Watcher Agent drafts repair proposals here for your approval.</p>
+          </div>
+        </div>
+        <div class="proposals-list" id="proposals-list">
+          <!-- Rendered by JS -->
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 5: MEMORY & CALIBRATION -->
+    <section class="view" id="view-memory">
+      <div class="memory-grid">
+        <div class="card">
+          <h2>Estimation Multipliers (Calibration)</h2>
+          <p class="card-desc">Derived from actual vs. estimated completion times across tasks and habits.</p>
+          <div class="calibration-stats" id="calibration-stats"></div>
+          <h4 style="margin-top:20px">Recent Completion Samples</h4>
+          <div class="samples-table-wrap">
+            <table class="table" id="samples-table">
+              <thead><tr><th>Item</th><th>Category</th><th>Est</th><th>Actual</th><th>Ratio</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="beliefs-header">
+            <h2>Agent Beliefs & Guidance</h2>
+            <button class="btn btn-sm btn-secondary" id="btn-add-belief">+ Add Belief</button>
+          </div>
+          <p class="card-desc">Durable knowledge about your workflow, preferences, and course specifics.</p>
+          <div class="beliefs-list" id="beliefs-list"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal for New / Edit Habit -->
+  <div class="modal-backdrop" id="modal-habit" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modal-habit-title">Add Recurring Habit</h3>
+        <button class="btn-icon" id="modal-habit-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Habit Name</label>
+          <input type="text" id="m-habit-name" class="input-text" placeholder="e.g. Gym Workout, Morning Run">
+        </div>
+        <div class="form-group">
+          <label>Days of the Week</label>
+          <div class="days-picker" id="m-habit-days">
+            <button type="button" class="day-btn" data-day="0">M</button>
+            <button type="button" class="day-btn" data-day="1">T</button>
+            <button type="button" class="day-btn" data-day="2">W</button>
+            <button type="button" class="day-btn" data-day="3">T</button>
+            <button type="button" class="day-btn" data-day="4">F</button>
+            <button type="button" class="day-btn" data-day="5">S</button>
+            <button type="button" class="day-btn" data-day="6">S</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label>Start Time</label>
+            <input type="time" id="m-habit-start" class="input-text" value="08:00" step="300">
+          </div>
+          <div class="form-group flex-1">
+            <label>Duration (Minutes)</label>
+            <input type="number" id="m-habit-duration" class="input-text" value="45" min="5" max="480" step="5">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Quick Duration</label>
+          <div class="resched-quick" id="m-habit-quick-dur">
+            <button type="button" class="chip" data-habit-dur="20">20 min</button>
+            <button type="button" class="chip" data-habit-dur="30">30 min</button>
+            <button type="button" class="chip" data-habit-dur="45">45 min</button>
+            <button type="button" class="chip" data-habit-dur="60">60 min</button>
+            <button type="button" class="chip" data-habit-dur="90">90 min</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Notes / Context</label>
+          <input type="text" id="m-habit-notes" class="input-text" placeholder="Optional notes">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="modal-habit-cancel">Cancel</button>
+        <button class="btn btn-primary" id="modal-habit-save">Save & Create Recurring Event</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal for LLM Settings -->
+  <div class="modal-backdrop" id="modal-llm" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>AI Provider & Model Settings</h3>
+        <button class="btn-icon" id="modal-llm-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="card-desc" style="margin-bottom:14px;">
+          Select your AI provider. <strong>Google Gemini Flash</strong> is recommended for faster multi-turn agent execution and a generous 1,500 requests/day free tier.
+        </p>
+        <div class="form-group">
+          <label>Provider</label>
+          <select id="m-llm-provider" class="select">
+            <option value="gemini">Google Gemini (Recommended — 1,500 req/day free)</option>
+            <option value="openrouter">OpenRouter (50 req/day free tier)</option>
+            <option value="custom">Custom (OpenAI-compatible)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Model</label>
+          <input type="text" id="m-llm-model" class="input-text" placeholder="gemini-3.5-flash" value="gemini-3.5-flash">
+          <span class="help-text" id="m-llm-model-help">Recommended: <code>gemini-3.5-flash</code> (fast & stable) or <code>gemini-3.8-flash</code></span>
+        </div>
+        <div class="form-group" id="m-llm-url-group" style="display:none">
+          <label>Base URL</label>
+          <input type="text" id="m-llm-url" class="input-text" placeholder="https://generativelanguage.googleapis.com/v1beta/openai/">
+        </div>
+        <div class="form-group">
+          <label>API Key</label>
+          <input type="password" id="m-llm-key" class="input-text" placeholder="Enter API Key (starts with AIzaSy... for Gemini)">
+          <div class="key-help-links" style="margin-top:6px; font-size:12px; color:var(--text-muted);">
+            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:underline;">
+              → Get a free Gemini API key from Google AI Studio
+            </a>
+          </div>
+        </div>
+        <div id="m-llm-test-result" style="margin-top:10px; font-size:13px; display:none; padding:8px 12px; border-radius:6px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="modal-llm-cancel">Cancel</button>
+        <button class="btn btn-primary" id="modal-llm-save">Save & Test Connection</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal for Calendar Event Inspector (Rename / Reschedule / Delete) -->
+  <div class="modal-backdrop" id="modal-event" style="display:none">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h3 id="m-ev-calendar-title">Calendar Event</h3>
+        <button class="btn-icon" id="modal-event-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Event Title</label>
+          <input type="text" id="m-ev-title" class="input-text">
+        </div>
+        <div class="resched-preview" id="m-ev-preview-box">
+          <div>
+            <div class="rp-when" id="m-ev-time">—</div>
+            <div class="rp-sub"><strong>Calendar:</strong> <span id="m-ev-cal-name"></span></div>
+          </div>
+          <div class="rp-sub" id="m-ev-dur-label">—</div>
+        </div>
+        <div id="m-ev-time-controls">
+          <div class="resched-grid">
+            <div class="form-group">
+              <label for="m-ev-date">Date</label>
+              <input type="date" id="m-ev-date" class="input-text">
+            </div>
+            <div class="form-group">
+              <label for="m-ev-start">Start</label>
+              <input type="time" id="m-ev-start" class="input-text" step="300">
+            </div>
+            <div class="form-group">
+              <label for="m-ev-minutes">Duration (min)</label>
+              <input type="number" id="m-ev-minutes" class="input-text" min="5" max="720" step="5">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Quick shift</label>
+            <div class="resched-quick" id="m-ev-quick-shift">
+              <button type="button" class="chip" data-ev-shift="-1440">− 1 day</button>
+              <button type="button" class="chip" data-ev-shift="-60">− 1 h</button>
+              <button type="button" class="chip" data-ev-shift="-15">− 15 min</button>
+              <button type="button" class="chip" data-ev-shift="15">+ 15 min</button>
+              <button type="button" class="chip" data-ev-shift="60">+ 1 h</button>
+              <button type="button" class="chip" data-ev-shift="1440">+ 1 day</button>
+            </div>
+          </div>
+          <div class="resched-warn" id="m-ev-warn"></div>
+        </div>
+        <div id="m-ev-notes-group" style="margin-top:8px;display:none">
+          <label style="font-size:11px;color:var(--text-dim)">Notes / Grounding</label>
+          <div id="m-ev-notes" style="font-size:12px;background:var(--bg-subtle);padding:8px;border-radius:4px;max-height:90px;overflow-y:auto;white-space:pre-wrap"></div>
+        </div>
+        <div id="m-ev-actions-row" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-sm btn-secondary" id="m-ev-btn-resched" style="display:none">⇄ Find Next Free Slot</button>
+          <button class="btn btn-sm btn-secondary" id="m-ev-btn-open-task" style="display:none">→ View Associated Task</button>
+        </div>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:space-between">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-danger btn-sm" id="m-ev-btn-delete">✕ Delete Event</button>
+          <button class="btn btn-danger btn-sm" id="m-ev-btn-delete-series" style="display:none">✕ Delete Entire Series</button>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-secondary btn-sm" id="modal-event-cancel">Cancel</button>
+          <button class="btn btn-primary btn-sm" id="m-ev-btn-save">Save Changes</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Custom Prompt -->
+  <div class="modal-backdrop" id="modal-custom-prompt" style="display:none">
+    <div class="modal" style="max-width:380px;">
+      <div class="modal-header">
+        <h3 id="m-prompt-title">Edit</h3>
+        <button class="btn-icon" id="m-prompt-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="m-prompt-msg" style="font-size:13px;color:var(--text);margin-bottom:6px;"></p>
+        <input type="text" id="m-prompt-input" class="input-text" style="width:100%;">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="m-prompt-cancel">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="m-prompt-ok">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Custom Confirm -->
+  <div class="modal-backdrop" id="modal-custom-confirm" style="display:none">
+    <div class="modal" style="max-width:380px;">
+      <div class="modal-header">
+        <h3 id="m-confirm-title">Confirm Action</h3>
+        <button class="btn-icon" id="m-confirm-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="m-confirm-msg" style="font-size:13px;color:var(--text);line-height:1.4;"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="m-confirm-cancel">Cancel</button>
+        <button class="btn btn-danger btn-sm" id="m-confirm-ok">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Reschedule Block -->
+  <div class="modal-backdrop" id="modal-resched" style="display:none">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h3 id="resched-title">Reschedule block</h3>
+        <button class="btn-icon" id="resched-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="resched-preview">
+          <div>
+            <div class="rp-when" id="resched-when">—</div>
+            <div class="rp-sub" id="resched-from">—</div>
+          </div>
+          <div class="rp-sub" id="resched-dur-label">—</div>
+        </div>
+        <div class="resched-grid">
+          <div class="form-group">
+            <label for="resched-date">Date</label>
+            <input type="date" id="resched-date" class="input-text">
+          </div>
+          <div class="form-group">
+            <label for="resched-start">Start</label>
+            <input type="time" id="resched-start" class="input-text" step="300">
+          </div>
+          <div class="form-group">
+            <label for="resched-minutes">Duration (min)</label>
+            <input type="number" id="resched-minutes" class="input-text" min="10" max="600" step="5">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Quick shift</label>
+          <div class="resched-quick">
+            <button type="button" class="chip" data-shift-min="-1440">− 1 day</button>
+            <button type="button" class="chip" data-shift-min="-60">− 1 h</button>
+            <button type="button" class="chip" data-shift-min="-15">− 15 min</button>
+            <button type="button" class="chip" data-shift-min="15">+ 15 min</button>
+            <button type="button" class="chip" data-shift-min="60">+ 1 h</button>
+            <button type="button" class="chip" data-shift-min="1440">+ 1 day</button>
+            <button type="button" class="chip" id="resched-next-free">Next free slot</button>
+          </div>
+        </div>
+        <div class="resched-warn" id="resched-warn"></div>
+        <div class="resched-ok" id="resched-ok">✓ No conflicts with your calendar</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="resched-cancel">Cancel</button>
+        <span class="spacer"></span>
+        <button class="btn btn-primary btn-sm" id="resched-save">Move block</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Task Deadline -->
+  <div class="modal-backdrop" id="modal-deadline" style="display:none">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h3 id="dl-title">Edit Task Deadline</h3>
+        <button class="btn-icon" id="dl-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="resched-preview">
+          <div>
+            <div class="rp-when" id="dl-when">—</div>
+            <div class="rp-sub" id="dl-from">—</div>
+          </div>
+          <div class="rp-sub" id="dl-rel-label">—</div>
+        </div>
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="dl-date">Deadline Date</label>
+            <input type="date" id="dl-date" class="input-text">
+          </div>
+          <div class="form-group flex-1">
+            <label for="dl-time">Deadline Time</label>
+            <input type="time" id="dl-time" class="input-text" step="300" value="23:59">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Quick pick &amp; shift</label>
+          <div class="resched-quick">
+            <button type="button" class="chip" data-dl-preset="today">Today 23:59</button>
+            <button type="button" class="chip" data-dl-preset="tomorrow">Tomorrow 23:59</button>
+            <button type="button" class="chip" data-dl-shift-days="-1">− 1 day</button>
+            <button type="button" class="chip" data-dl-shift-days="1">+ 1 day</button>
+            <button type="button" class="chip" data-dl-shift-days="3">+ 3 days</button>
+            <button type="button" class="chip" data-dl-shift-days="7">+ 1 week</button>
+            <button type="button" class="chip" data-dl-time="17:00">17:00</button>
+            <button type="button" class="chip" data-dl-time="23:59">23:59</button>
+          </div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);cursor:pointer;margin-top:4px">
+          <input type="checkbox" id="dl-replan">
+          <span>Automatically re-place task blocks to fit before the new deadline</span>
+        </label>
+        <div class="resched-warn" id="dl-warn"></div>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:space-between">
+        <button class="btn btn-danger btn-sm" id="dl-clear">✕ Clear Deadline</button>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-secondary btn-sm" id="dl-cancel">Cancel</button>
+          <button class="btn btn-primary btn-sm" id="dl-save">Save Deadline</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Log Completion / Habit Check-in -->
+  <div class="modal-backdrop" id="modal-checkin" style="display:none">
+    <div class="modal" style="max-width:440px">
+      <div class="modal-header">
+        <h3 id="ci-title">Log Completion</h3>
+        <button class="btn-icon" id="ci-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="resched-preview">
+          <div>
+            <div class="rp-when" id="ci-item-name">—</div>
+            <div class="rp-sub" id="ci-planned-label">—</div>
+          </div>
+          <div class="rp-sub" id="ci-ratio-label">—</div>
+        </div>
+        <div class="form-row">
+          <div class="form-group flex-1" id="ci-date-group">
+            <label for="ci-date">Date</label>
+            <input type="date" id="ci-date" class="input-text">
+          </div>
+          <div class="form-group flex-1">
+            <label for="ci-minutes">Actual Duration (min)</label>
+            <input type="number" id="ci-minutes" class="input-text" min="1" max="600" step="5">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Quick adjust duration</label>
+          <div class="resched-quick">
+            <button type="button" class="chip" data-ci-delta="-15">− 15 min</button>
+            <button type="button" class="chip" data-ci-delta="-5">− 5 min</button>
+            <button type="button" class="chip" id="ci-btn-planned">Planned</button>
+            <button type="button" class="chip" data-ci-delta="5">+ 5 min</button>
+            <button type="button" class="chip" data-ci-delta="15">+ 15 min</button>
+            <button type="button" class="chip" data-ci-delta="30">+ 30 min</button>
+          </div>
+        </div>
+        <div class="form-group" id="ci-note-group">
+          <label for="ci-note">Optional Note</label>
+          <input type="text" id="ci-note" class="input-text" placeholder="Any context for calibration...">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="ci-cancel">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="ci-save">Save &amp; Log</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add / Edit Agent Belief -->
+  <div class="modal-backdrop" id="modal-belief" style="display:none">
+    <div class="modal" style="max-width:440px">
+      <div class="modal-header">
+        <h3 id="m-belief-title">Add Agent Belief</h3>
+        <button class="btn-icon" id="m-belief-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="m-belief-scope">Scope</label>
+          <select id="m-belief-scope" class="select">
+            <option value="global">Global (All planning &amp; scheduling)</option>
+            <option value="thesis">Thesis (Deep work &amp; research)</option>
+            <option value="habits">Habits &amp; Routines</option>
+            <option value="uni:NLP">Course — NLP</option>
+            <option value="uni:DL">Course — Deep Learning</option>
+            <option value="uni:CV">Course — Computer Vision</option>
+            <option value="uni:RL">Course — Reinforcement Learning</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="m-belief-text">Belief / Scheduling Guidance</label>
+          <input type="text" id="m-belief-text" class="input-text" placeholder="e.g. Prefer scheduling deep work between 09:30 and 12:30">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="m-belief-cancel">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="m-belief-save">Save Belief</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toasts"></div>
+
+  <script src="app.js?v=20261102b"></script>
+</body>
+</html>
