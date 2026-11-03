@@ -37,6 +37,7 @@ mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 cp "$BINARY" "$APP_PATH/Contents/MacOS/Planner"
 chmod 755 "$APP_PATH/Contents/MacOS/Planner"
 cp "$PLIST_SOURCE" "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :ProjectRoot $PROJECT_ROOT" "$APP_PATH/Contents/Info.plist" 2>/dev/null || true
 printf 'APPL????' > "$APP_PATH/Contents/PkgInfo"
 
 if [ -f "$ICON_SOURCE" ]; then

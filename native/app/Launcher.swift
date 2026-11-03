@@ -147,11 +147,32 @@ final class PlannerAppDelegate: NSObject, NSApplicationDelegate, WKNavigationDel
         }
     }
 
+    private func resolveProjectRoot() -> String {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        var candidates: [String] = []
+        if let configured = Bundle.main.object(forInfoDictionaryKey: "ProjectRoot") as? String, !configured.isEmpty {
+            candidates.append(configured)
+        }
+        candidates.append(contentsOf: [
+            "\(home)/Desktop/personal-planner",
+            "\(home)/Desktop/Planner",
+            "\(home)/personal-planner",
+            "\(home)/Planner"
+        ])
+        for cand in candidates {
+            if fm.fileExists(atPath: "\(cand)/planner/cli.py") {
+                return cand
+            }
+        }
+        return candidates.first ?? "\(home)/Desktop/personal-planner"
+    }
+
     private func startServerIfNeeded() -> Bool {
         if let process = serverProcess, process.isRunning {
             return true
         }
-        let projectRoot = (Bundle.main.object(forInfoDictionaryKey: "ProjectRoot") as? String) ?? "/Users/macos/Desktop/Planner"
+        let projectRoot = resolveProjectRoot()
 
         if !FileManager.default.fileExists(atPath: kServerLogPath) {
             _ = FileManager.default.createFile(atPath: kServerLogPath, contents: nil, attributes: nil)
