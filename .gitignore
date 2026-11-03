@@ -4,11 +4,12 @@
 *.key
 *.pem
 
-# Runtime Databases & Caches
+# Runtime Databases, Caches & Local User Config
 data/*.db
 data/*.db-shm
 data/*.db-wal
 data/*_cache.json
+data/config.json
 legacy/data/
 
 # Compiled Native Binaries & App Bundles
