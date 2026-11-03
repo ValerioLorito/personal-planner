@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Planner — Agentic Planner</title>
-  <link rel="stylesheet" href="app.css?v=20261103b">
+  <link rel="stylesheet" href="app.css?v=20261103c">
 </head>
 <body class="theme-ink">
   <header class="app-header">
@@ -35,9 +35,9 @@
       <div class="status-pill status-pill-clickable" id="ai-status" title="Click to configure AI Provider & Model (Gemini / OpenRouter)">
         <span class="status-label" id="ai-budget-text">AI 0/50</span>
       </div>
-      <div class="status-pill" id="live-status" title="Real-time EventKit Stream">
+      <div class="status-pill status-pill-clickable" id="live-status" title="Real-time clock &amp; EventKit stream — click to jump to current time">
         <span class="pulse-dot"></span>
-        <span class="status-label">Live</span>
+        <span class="status-label" id="live-clock-label" style="font-family:var(--mono);font-size:11.5px">Live</span>
       </div>
     </div>
   </header>
@@ -801,6 +801,6 @@
   <!-- Toast Container -->
   <div class="toast-container" id="toasts"></div>
 
-  <script src="app.js?v=20261103b"></script>
+  <script src="app.js?v=20261103c"></script>
 </body>
 </html>

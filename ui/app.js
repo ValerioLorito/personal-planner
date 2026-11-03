@@ -44,6 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initLLMSettings();
   initWorkspaceSettings();
   initEventInspector();
+  initRealtimeClock();
   
   loadState();
   connectSSE();
@@ -418,7 +419,18 @@ function initScheduleNav() {
   document.getElementById('week-today').addEventListener('click', () => {
     S.currentMonday = getMonday(new Date());
     renderScheduleGrid();
+    scrollToNowLine(true);
   });
+  const livePill = document.getElementById('live-status');
+  if (livePill) {
+    livePill.addEventListener('click', () => {
+      const schedTab = document.querySelector('.nav-tab[data-tab="schedule"]');
+      if (schedTab && S.activeTab !== 'schedule') schedTab.click();
+      S.currentMonday = getMonday(new Date());
+      renderScheduleGrid();
+      scrollToNowLine(true);
+    });
+  }
   const btnRefresh = document.getElementById('week-refresh');
   if (btnRefresh) {
     btnRefresh.addEventListener('click', async () => {
@@ -537,6 +549,11 @@ function renderScheduleGrid() {
     (S.tasks || []).forEach(t => (t.blocks || []).forEach(b => {
       if (b.status === 'proposed' && b.start && b.end) widen(b.start, b.end);
     }));
+    const curNow = new Date();
+    if (curNow >= wkStart && curNow < wkEnd) {
+      dayStartHour = Math.min(dayStartHour, curNow.getHours());
+      dayEndHour = Math.max(dayEndHour, curNow.getHours() + 1);
+    }
     dayEndHour = Math.min(24, dayEndHour);
   }
 
@@ -591,6 +608,8 @@ function renderScheduleGrid() {
   const todayStr = fmtDate(new Date());
   const now = new Date();
   const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  S.lastRenderedDate = todayStr;
+  S.gridLayout = { dayStartHour, dayEndHour, hourHeight, headerOffset, todayStr };
 
   // 7 Days
   for (let i = 0; i < 7; i++) {
@@ -631,13 +650,15 @@ function renderScheduleGrid() {
     }
     dayCol.appendChild(lines);
 
-    // Now line if today
+    // Now line if today (updated continuously in real time)
     if (isToday && now.getHours() >= dayStartHour && now.getHours() < dayEndHour) {
       const nowLine = document.createElement('div');
       nowLine.className = 'now-line';
-      const minsFromStart = (now.getHours() - dayStartHour) * 60 + now.getMinutes();
+      nowLine.id = 'cal-now-line';
+      const minsFromStart = (now.getHours() - dayStartHour) * 60 + now.getMinutes() + (now.getSeconds() / 60);
       const top = (minsFromStart / 60) * hourHeight + headerOffset;
       nowLine.style.top = `${top}px`;
+      nowLine.innerHTML = `<span class="now-line-badge" id="cal-now-badge">${fmtTime(now)}</span>`;
       dayCol.appendChild(nowLine);
     }
 
@@ -670,6 +691,91 @@ function renderScheduleGrid() {
   }
 
   renderTodayRail();
+  updateRealtimeEventStates(new Date());
+  if (!S.didInitialScrollToNow) {
+    S.didInitialScrollToNow = true;
+    setTimeout(() => scrollToNowLine(false), 60);
+  }
+}
+
+function scrollToNowLine(smooth = true) {
+  const wrap = document.querySelector('.schedule-grid-wrap');
+  const nowLine = document.getElementById('cal-now-line');
+  if (!wrap || !nowLine) return;
+  const lineTop = parseFloat(nowLine.style.top || '0');
+  const targetScroll = Math.max(0, lineTop - wrap.clientHeight * 0.38);
+  wrap.scrollTo({ top: targetScroll, behavior: smooth ? 'smooth' : 'auto' });
+}
+
+function initRealtimeClock() {
+  let lastMinute = -1;
+  let tickCount = 0;
+
+  const tick = () => {
+    const now = new Date();
+    S.now = now.toISOString();
+
+    // 1. Update header real-time clock pill
+    const clockLbl = document.getElementById('live-clock-label');
+    if (clockLbl) {
+      clockLbl.textContent = `${fmtNice(now)} · ${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+    }
+
+    // 2. Check midnight rollover so the calendar advances to the new day automatically
+    const curDateStr = fmtDate(now);
+    if (S.lastRenderedDate && curDateStr !== S.lastRenderedDate) {
+      const prevMon = fmtDate(getMonday(new Date(S.lastRenderedDate + 'T12:00:00')));
+      if (fmtDate(S.currentMonday) === prevMon) {
+        S.currentMonday = getMonday(now);
+      }
+      S.lastRenderedDate = curDateStr;
+      renderScheduleGrid();
+      return;
+    }
+
+    // 3. Smoothly advance the calendar .now-line and its time badge in real time
+    const nowLine = document.getElementById('cal-now-line');
+    const nowBadge = document.getElementById('cal-now-badge');
+    const layout = S.gridLayout;
+    if (nowLine && layout) {
+      const h = now.getHours();
+      if (h < layout.dayStartHour || h >= layout.dayEndHour) {
+        renderScheduleGrid();
+        return;
+      }
+      const minsFromStart = (h - layout.dayStartHour) * 60 + now.getMinutes() + (now.getSeconds() / 60);
+      const top = (minsFromStart / 60) * layout.hourHeight + layout.headerOffset;
+      nowLine.style.top = `${top}px`;
+      if (nowBadge) nowBadge.textContent = fmtTime(now);
+    }
+
+    // 4. Every minute rollover, update active/past states on grid tiles & Today rail
+    if (now.getMinutes() !== lastMinute) {
+      lastMinute = now.getMinutes();
+      updateRealtimeEventStates(now);
+      renderTodayRail();
+    }
+
+    // 5. Every 60s, sync state in background to stay aligned with Apple Calendar
+    tickCount += 1;
+    if (tickCount % 60 === 0) {
+      loadState();
+    }
+  };
+
+  tick();
+  setInterval(tick, 1000);
+}
+
+function updateRealtimeEventStates(now = new Date()) {
+  const nowMs = now.getTime();
+  document.querySelectorAll('.cal-event-tile[data-start][data-end]').forEach(tile => {
+    const st = new Date(tile.dataset.start).getTime();
+    const en = new Date(tile.dataset.end).getTime();
+    if (isNaN(st) || isNaN(en)) return;
+    tile.classList.toggle('is-past', en <= nowMs);
+    tile.classList.toggle('is-ongoing', st <= nowMs && en > nowMs);
+  });
 }
 
 function createEventTile(e, startHour, hourHeight, type, headerOffset = 36, colIdx = 0, numCols = 1) {
@@ -683,6 +789,8 @@ function createEventTile(e, startHour, hourHeight, type, headerOffset = 36, colI
 
     const tile = document.createElement('div');
     tile.className = `cal-event-tile ${type}`;
+    tile.dataset.start = e.start;
+    tile.dataset.end = e.end;
     tile.style.top = `${top}px`;
     tile.style.height = `${height}px`;
     if (numCols > 1) {
@@ -718,6 +826,8 @@ function createBlockTile(b, startHour, hourHeight, headerOffset = 36, colIdx = 0
 
     const tile = document.createElement('div');
     tile.className = 'cal-event-tile block';
+    tile.dataset.start = b.start;
+    tile.dataset.end = b.end;
     tile.style.top = `${top}px`;
     tile.style.height = `${height}px`;
     tile.style.borderStyle = b.isProposed ? 'dashed' : 'solid';
@@ -754,14 +864,21 @@ function renderTodayRail() {
     document.getElementById('today-stats').textContent = 'All free';
   } else {
     document.getElementById('today-stats').textContent = `${dayEvents.length} event${dayEvents.length === 1 ? '' : 's'} scheduled today`;
+    const nowMs = Date.now();
     dayEvents.forEach(e => {
       const item = document.createElement('div');
       const isHabit = (e.calendar || '').toLowerCase().includes('habits');
       const isBlock = (e.notes || '').includes('planner:block=');
-      item.className = `timeline-item ${isBlock ? 'block' : (isHabit ? 'habit' : 'meeting')}`;
-      const timeLabel = isAllDayOrMultiDay(e) ? 'All day' : `${e.start.slice(11,16)}–${e.end.slice(11,16)}`;
+      const isAllDay = isAllDayOrMultiDay(e);
+      const stMs = e.start ? new Date(e.start).getTime() : 0;
+      const enMs = e.end ? new Date(e.end).getTime() : 0;
+      const isOngoing = !isAllDay && stMs <= nowMs && enMs > nowMs;
+      const isPast = !isAllDay && enMs > 0 && enMs <= nowMs;
+      item.className = `timeline-item ${isBlock ? 'block' : (isHabit ? 'habit' : 'meeting')}${isOngoing ? ' is-ongoing' : ''}${isPast ? ' is-past' : ''}`;
+      const timeLabel = isAllDay ? 'All day' : `${e.start.slice(11,16)}–${e.end.slice(11,16)}`;
       const calLabel = e.calendar ? ` <span class="tile-cal-badge">[${escapeHtml(e.calendar.trim())}]</span>` : '';
-      item.innerHTML = `<strong>${timeLabel}</strong> ${escapeHtml(e.title)}${calLabel}`;
+      const nowTag = isOngoing ? '<span class="now-pill-tag">NOW</span>' : '';
+      item.innerHTML = `${nowTag}<strong>${timeLabel}</strong> ${escapeHtml(e.title)}${calLabel}`;
       item.addEventListener('click', () => openEventInspector(e, false));
       container.appendChild(item);
     });
