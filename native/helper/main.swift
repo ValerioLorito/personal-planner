@@ -428,7 +428,7 @@ func cmdEnsureCalendar(_ name: String) {
 func cmdCalendars() {
     requireAccess()
     let cals = store.calendars(for: .event).map { c -> [String: Any] in
-        ["name": c.title, "id": c.calendarIdentifier, "source": c.source.title,
+        ["name": c.title, "title": c.title, "id": c.calendarIdentifier, "source": c.source.title,
          "writable": c.allowsContentModifications]
     }
     emit(["calendars": cals])

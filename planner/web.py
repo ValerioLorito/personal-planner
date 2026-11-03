@@ -14,9 +14,9 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import habits_mgr, memory, proposals_mgr, tasks_mgr
+from . import habits_mgr, memory, proposals_mgr, sources, tasks_mgr
 from .app import App
-from .config import UI_DIR
+from .config import UI_DIR, expand
 
 
 class PlannerHandler(SimpleHTTPRequestHandler):
@@ -81,6 +81,14 @@ class PlannerHandler(SimpleHTTPRequestHandler):
                 "limit": b["limit"],
                 "used": b["used"],
                 "presets": LLM_PRESETS
+            })
+        if path == "/api/config/workspace":
+            return self._send_json({
+                "sources": sources.get_configured_sources(self.app.cfg),
+                "categories": self.app.categories(),
+                "calendars": self.app.cfg["calendars"],
+                "calendars_list": self.app.cal.calendars(),
+                "work": self.app.cfg["work"],
             })
         return super().do_GET()
 
@@ -384,6 +392,160 @@ class PlannerHandler(SimpleHTTPRequestHandler):
                     "test": test_res
                 })
 
+            # Native macOS Folder Picker & Folder Inspection
+            if path == "/api/config/pick_folder":
+                import subprocess
+                prompt = str(body.get("prompt") or "Select a folder for Planner file analysis:").replace('"', '\\"')
+                script = f'POSIX path of (choose folder with prompt "{prompt}")'
+                proc = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True, timeout=120)
+                if proc.returncode != 0:
+                    return self._send_json({"ok": False, "cancelled": True})
+                raw_path = (proc.stdout or "").strip().rstrip("/")
+                if not raw_path:
+                    return self._send_json({"ok": False, "cancelled": True})
+                home = os.path.expanduser("~").rstrip("/")
+                pretty_path = ("~" + raw_path[len(home):]) if raw_path.startswith(home + "/") else raw_path
+                basename = os.path.basename(raw_path) or "Workspace"
+                subfolders = []
+                item_count = 0
+                if os.path.isdir(raw_path):
+                    try:
+                        for name in sorted(os.listdir(raw_path)):
+                            if name.startswith("."):
+                                continue
+                            item_count += 1
+                            if os.path.isdir(os.path.join(raw_path, name)):
+                                subfolders.append(name)
+                    except OSError:
+                        pass
+                return self._send_json({
+                    "ok": True,
+                    "path": pretty_path,
+                    "resolved_path": raw_path,
+                    "suggested_label": basename.replace("_", " ").replace("-", " ").title(),
+                    "item_count": item_count,
+                    "subfolders": subfolders[:30],
+                })
+
+            if path == "/api/config/inspect_folder":
+                raw_p = str(body.get("path") or "").strip()
+                mode = str(body.get("mode") or "single").strip().lower()
+                excl = {str(e).strip().lower() for e in (body.get("exclude") or []) if str(e).strip()}
+                resolved = expand(raw_p) if raw_p else ""
+                exists = bool(resolved and os.path.isdir(resolved))
+                items = []
+                if exists:
+                    try:
+                        for name in sorted(os.listdir(resolved)):
+                            if name.startswith("."):
+                                continue
+                            full = os.path.join(resolved, name)
+                            if mode == "subfolders":
+                                if os.path.isdir(full) and name.strip().lower() not in excl:
+                                    items.append(name)
+                            else:
+                                items.append(name + ("/" if os.path.isdir(full) else ""))
+                    except OSError:
+                        pass
+                return self._send_json({
+                    "ok": True,
+                    "exists": exists,
+                    "resolved_path": resolved,
+                    "count": len(items),
+                    "items": items[:30],
+                })
+
+            # Modular Workspace, Folders, Calendars & Work Schedule Config
+            if path == "/api/config/workspace":
+                if isinstance(body.get("sources"), list):
+                    cleaned_sources = []
+                    for idx, s in enumerate(body["sources"]):
+                        if not isinstance(s, dict):
+                            continue
+                        label = str(s.get("label") or f"Folder {idx + 1}").strip()
+                        raw_p = str(s.get("path") or s.get("root") or "").strip()
+                        if not label and not raw_p:
+                            continue
+                        mode = str(s.get("mode") or "single").strip().lower()
+                        if mode not in ("single", "subfolders"):
+                            mode = "single"
+                        cal = str(s.get("calendar") or "").strip()
+                        excl = s.get("exclude") or []
+                        if isinstance(excl, str):
+                            excl = [x.strip() for x in excl.split(",") if x.strip()]
+                        else:
+                            excl = [str(x).strip() for x in excl if str(x).strip()]
+                        skip_dirs = s.get("skip_dirs") or sources.DEFAULT_SKIP_DIRS
+                        if isinstance(skip_dirs, str):
+                            skip_dirs = [x.strip() for x in skip_dirs.split(",") if x.strip()]
+                        cleaned_sources.append({
+                            "id": str(s.get("id") or sources._slug(label)).strip(),
+                            "label": label,
+                            "path": raw_p,
+                            "mode": mode,
+                            "calendar": cal,
+                            "exclude": excl,
+                            "skip_dirs": list(skip_dirs),
+                            "enabled": s.get("enabled", True) is not False,
+                        })
+                    self.app.cfg["sources"] = cleaned_sources
+
+                    # Keep legacy thesis/university keys synced for backward compatibility
+                    first_single = next((x for x in cleaned_sources if x["mode"] == "single"), None)
+                    if first_single:
+                        self.app.cfg.setdefault("thesis", {})["label"] = first_single["label"]
+                        self.app.cfg["thesis"]["root"] = first_single["path"]
+                    first_sub = next((x for x in cleaned_sources if x["mode"] == "subfolders"), None)
+                    if first_sub:
+                        self.app.cfg.setdefault("university", {})["root"] = first_sub["path"]
+                        self.app.cfg["university"]["exclude"] = first_sub["exclude"]
+
+                if isinstance(body.get("calendars"), dict):
+                    c_in = body["calendars"]
+                    c_cfg = self.app.cfg.setdefault("calendars", {})
+                    for k in ("thesis", "university", "habits"):
+                        if k in c_in and str(c_in[k]).strip():
+                            c_cfg[k] = str(c_in[k]).strip()
+                    if isinstance(c_in.get("ignore"), list):
+                        c_cfg["ignore"] = [str(x).strip() for x in c_in["ignore"] if str(x).strip()]
+                    if isinstance(c_in.get("read_also"), list):
+                        c_cfg["read_also"] = [str(x).strip() for x in c_in["read_also"] if str(x).strip()]
+
+                if isinstance(body.get("work"), dict):
+                    w_in = body["work"]
+                    w_cfg = self.app.cfg.setdefault("work", {})
+                    if isinstance(w_in.get("days"), list):
+                        days = sorted({int(d) for d in w_in["days"] if 0 <= int(d) <= 6})
+                        if days:
+                            w_cfg["days"] = days
+                    for tkey in ("day_start", "day_end"):
+                        if w_in.get(tkey):
+                            w_cfg[tkey] = str(w_in[tkey]).strip()[:5]
+                    for nkey in ("max_block_min", "min_block_min", "max_day_min", "deadline_margin_hours", "buffer_min"):
+                        if w_in.get(nkey) is not None:
+                            try:
+                                w_cfg[nkey] = max(0, int(w_in[nkey]))
+                            except (TypeError, ValueError):
+                                pass
+                    if "weekend_if_needed" in w_in:
+                        w_cfg["weekend_if_needed"] = bool(w_in["weekend_if_needed"])
+
+                self.app.save_config()
+                try:
+                    self.app.cal.ensure_planner_calendars()
+                except Exception:
+                    pass
+                self.app.cal.invalidate()
+                self.app.notify("state_changed", {"action": "workspace_updated"})
+                self.app.notify("events_changed", {"action": "workspace_updated"})
+                return self._send_json({
+                    "ok": True,
+                    "sources": sources.get_configured_sources(self.app.cfg),
+                    "categories": self.app.categories(),
+                    "calendars": self.app.cfg["calendars"],
+                    "work": self.app.cfg["work"],
+                })
+
             return self._send_error(404, "Endpoint not found")
 
         except Exception as e:
@@ -537,6 +699,7 @@ class PlannerHandler(SimpleHTTPRequestHandler):
             "beliefs": beliefs,
             "events": events,
             "calendars_list": self.app.cal.calendars(),
+            "sources": sources.get_configured_sources(self.app.cfg),
             "categories": self.app.categories(),
             "config": {
                 "calendars": self.app.cfg["calendars"],

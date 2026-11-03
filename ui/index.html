@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Planner — Agentic Planner</title>
-  <link rel="stylesheet" href="app.css?v=20261102b">
+  <link rel="stylesheet" href="app.css?v=20261103b">
 </head>
 <body class="theme-ink">
   <header class="app-header">
@@ -25,7 +25,10 @@
       <div class="status-pill status-pill-clickable" id="theme-toggle" title="Switch theme: Ledger (light) / Ink (dark) / Midnight">
         <span class="status-label" id="theme-toggle-label">Ink</span>
       </div>
-      <div class="status-pill" id="cal-status" title="Apple Calendar Connection">
+      <div class="status-pill status-pill-clickable" id="workspace-status" title="Configure folders for file analysis, target calendars, and working hours">
+        <span class="status-label" id="workspace-status-label">📁 Folders &amp; Calendars</span>
+      </div>
+      <div class="status-pill status-pill-clickable" id="cal-status" title="Apple Calendar Connection — click to configure calendars &amp; folders">
         <span class="status-dot"></span>
         <span class="status-label">Calendar</span>
       </div>
@@ -73,7 +76,10 @@
             <div id="pi-meeting-info" class="pi-info">No upcoming commitments</div>
           </div>
           <div class="sidebar-card">
-            <h3>Inherited Calendars (iCloud / Google)</h3>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <h3 style="margin:0">Inherited Calendars</h3>
+              <button class="btn btn-sm btn-secondary" id="btn-sidebar-workspace" style="padding:2px 7px;font-size:10px" title="Configure calendars &amp; folders">⚙ Setup</button>
+            </div>
             <div id="inherited-calendars-list" class="inherited-cals-list"></div>
           </div>
         </div>
@@ -90,18 +96,26 @@
       <div class="tasks-layout">
         <div class="tasks-left">
           <div class="card intake-card">
-            <h2>Plan or Reschedule Tasks with AI</h2>
-            <p class="card-desc">Describe a new task to plan from your folders, or ask the agent to move, reschedule, or edit any existing task (e.g. <em>"Move Quiz 3 to Friday at 15:00"</em> or <em>"Reschedule Assignment 1 to Thursday afternoon"</em>).</p>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+              <div>
+                <h2>Plan or Reschedule Tasks with AI</h2>
+                <p class="card-desc">Describe a new task to plan from your configured folders, or ask the agent to move, reschedule, or edit any existing task.</p>
+              </div>
+              <button class="btn btn-sm btn-secondary" id="btn-manage-folders" title="Choose folders for file analysis &amp; configure calendars" style="white-space:nowrap">📁 Choose Folders…</button>
+            </div>
+
+            <!-- Modular Folder Widget Bar -->
+            <div class="sources-widget-bar" id="active-sources-bar"></div>
+
             <div class="intake-form">
               <div class="form-row">
-                <input type="text" id="task-input" class="input-text" placeholder="e.g. Plan HW1 for Hybrid Quantum, or 'Move Attempt Quiz 3 to Friday 15:00'..." autocomplete="off">
+                <input type="text" id="task-input" class="input-text" placeholder="e.g. Plan HW1, implement evaluation script, or 'Move Quiz 3 to Friday 15:00'..." autocomplete="off">
               </div>
               <div class="form-row form-row-opts">
                 <div class="form-group">
-                  <label>Category</label>
+                  <label>Category / Source Folder</label>
                   <select id="task-category" class="select">
                     <option value="">Auto-detect category / Edit existing task</option>
-                    <option value="thesis">Thesis (commonsense-atlas)</option>
                   </select>
                 </div>
                 <button class="btn btn-primary btn-plan" id="btn-plan-task">
@@ -684,9 +698,109 @@
     </div>
   </div>
 
+  <!-- Modal: Modular Workspace, Folders, Calendars & Schedule Setup -->
+  <div class="modal-backdrop" id="modal-workspace" style="display:none">
+    <div class="modal" style="max-width:720px;width:95%">
+      <div class="modal-header">
+        <h3>Workspace Setup — Folders, Calendars &amp; Schedule</h3>
+        <button class="btn-icon" id="ws-close">✕</button>
+      </div>
+      <div class="modal-body" style="max-height:76vh;overflow-y:auto">
+        <!-- SECTION 1: FOLDERS FOR FILE ANALYSIS -->
+        <div class="ws-section">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">
+            <div>
+              <h4 style="margin:0;font-size:14px;color:var(--text)">1. Folders for AI File Analysis</h4>
+              <p class="card-desc" style="margin:2px 0 0 0">Choose which local repositories, project folders, or course directories the Task Agent inspects when grounding and estimating tasks.</p>
+            </div>
+            <div style="display:flex;gap:6px;flex-shrink:0">
+              <button type="button" class="btn btn-sm btn-secondary" id="ws-btn-pick-new">📁 Pick Folder in Finder…</button>
+              <button type="button" class="btn btn-sm btn-secondary" id="ws-btn-add-source">+ Add Blank Row</button>
+            </div>
+          </div>
+          <div id="ws-sources-list" class="ws-sources-list"></div>
+        </div>
+
+        <!-- SECTION 2: APPLE CALENDARS MAPPING -->
+        <div class="ws-section" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
+          <h4 style="margin:0 0 4px 0;font-size:14px;color:var(--text)">2. Target Apple Calendars (Where Planner Writes)</h4>
+          <p class="card-desc" style="margin:0 0 10px 0">Pick from your existing writable calendars or type any new name (Planner will create it in Apple Calendar if it does not exist).</p>
+          <datalist id="ws-cal-datalist"></datalist>
+          <div class="resched-grid">
+            <div class="form-group">
+              <label for="ws-cal-thesis">Primary / Project Calendar</label>
+              <input type="text" list="ws-cal-datalist" id="ws-cal-thesis" class="input-text" placeholder="e.g. Thesis, Work, Projects">
+            </div>
+            <div class="form-group">
+              <label for="ws-cal-uni">Courses / Secondary Calendar</label>
+              <input type="text" list="ws-cal-datalist" id="ws-cal-uni" class="input-text" placeholder="e.g. University, Study">
+            </div>
+            <div class="form-group">
+              <label for="ws-cal-habits">Habits Calendar</label>
+              <input type="text" list="ws-cal-datalist" id="ws-cal-habits" class="input-text" placeholder="e.g. Habits, Routines">
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;margin-bottom:6px">
+            <label style="font-size:12px;font-weight:600;color:var(--text-muted)">Inherited Calendars (Read Commitments &amp; Deadlines From)</label>
+            <div style="display:flex;gap:6px">
+              <button type="button" class="chip" id="ws-cals-all">Enable All</button>
+              <button type="button" class="chip" id="ws-cals-none">Disable All</button>
+            </div>
+          </div>
+          <div id="ws-inherited-cals" class="ws-inherited-grid"></div>
+        </div>
+
+        <!-- SECTION 3: WORKING HOURS & SCHEDULING RULES -->
+        <div class="ws-section" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
+          <h4 style="margin:0 0 4px 0;font-size:14px;color:var(--text)">3. Working Hours &amp; Scheduling Preferences</h4>
+          <p class="card-desc" style="margin:0 0 10px 0">Controls when the deterministic scheduler places work blocks around your calendar commitments.</p>
+          <div class="form-group">
+            <label>Working Days</label>
+            <div class="days-picker" id="ws-work-days">
+              <button type="button" class="day-btn" data-wday="0">M</button>
+              <button type="button" class="day-btn" data-wday="1">T</button>
+              <button type="button" class="day-btn" data-wday="2">W</button>
+              <button type="button" class="day-btn" data-wday="3">T</button>
+              <button type="button" class="day-btn" data-wday="4">F</button>
+              <button type="button" class="day-btn" data-wday="5">S</button>
+              <button type="button" class="day-btn" data-wday="6">S</button>
+            </div>
+          </div>
+          <div class="resched-grid" style="grid-template-columns:repeat(4, 1fr)">
+            <div class="form-group">
+              <label for="ws-day-start">Day Start</label>
+              <input type="time" id="ws-day-start" class="input-text" step="300" value="09:00">
+            </div>
+            <div class="form-group">
+              <label for="ws-day-end">Day End</label>
+              <input type="time" id="ws-day-end" class="input-text" step="300" value="19:00">
+            </div>
+            <div class="form-group">
+              <label for="ws-max-block">Max Block (min)</label>
+              <input type="number" id="ws-max-block" class="input-text" min="25" max="360" step="5" value="90">
+            </div>
+            <div class="form-group">
+              <label for="ws-max-day">Max Daily Work (min)</label>
+              <input type="number" id="ws-max-day" class="input-text" min="60" max="720" step="15" value="360">
+            </div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);cursor:pointer;margin-top:6px">
+            <input type="checkbox" id="ws-weekend-needed" checked>
+            <span>Use weekends if needed to meet a tight deadline</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="ws-cancel">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="ws-save">Save Workspace Settings</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Container -->
   <div class="toast-container" id="toasts"></div>
 
-  <script src="app.js?v=20261102b"></script>
+  <script src="app.js?v=20261103b"></script>
 </body>
 </html>

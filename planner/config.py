@@ -35,12 +35,10 @@ DEFAULTS = {
     },
     # ---- calendars ----
     "calendars": {
-        "thesis": "Thesis",                  # planner writes thesis blocks here
-        "university": "University",          # planner writes course blocks here
-        "habits": "Habits",                  # habits live here (recurring series)
-        "read_also": ["UNIVERSITÀ ", "Calendario", "Casa", "Lavoro", "Scadenze",
-                      "BANDI/SCADENZE", "Valerio LORITO", "valeriolorito00@gmail.com",
-                      "Famiglia", "JE SO PAZZO"],
+        "thesis": "Thesis",                  # primary project / deep-work calendar
+        "university": "University",          # courses / secondary calendar
+        "habits": "Habits",                  # recurring habits calendar
+        "read_also": [],                     # empty = auto-inherit all non-ignored calendars
         "ignore": ["Birthdays", "Siri Suggestions", "Scheduled Reminders",
                    "Festività in Italia", "Festività italiane", "Holidays"],
     },

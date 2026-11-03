@@ -15,8 +15,8 @@ from ..scheduler import free_minutes_by_day, parse_deadline
 from .runtime import Agent
 from .tools import calendar_tools, fmt_event, source_tools
 
-SYSTEM = """You are the planning agent of "Planner", the personal agentic planner of a master's student
-who works on a THESIS project (a code repository) and on UNIVERSITY COURSES (one folder of material per course).
+SYSTEM = """You are the planning agent of "Planner", a personal agentic planner
+that grounds tasks in the user's configured project, course, and workspace folders (`# Categories`) and schedules work around their Apple Calendar commitments.
 
 You support TWO modes depending on the user's request:
 
@@ -226,11 +226,12 @@ def normalize(app, plan: dict, task: dict) -> dict:
             "edits": [e for e in plan["edits"] if isinstance(e, dict)]
         }
     cats = {c["id"]: c for c in app.categories()}
-    cat = task.get("category") or plan.get("category") or "thesis"
-    if cat not in cats:
+    default_cat = next(iter(cats.keys()), "thesis")
+    cat = task.get("category") or plan.get("category") or default_cat
+    if cat not in cats and cats:
         low = {k.lower(): k for k in cats}
         cat = low.get(str(cat).lower()) or low.get("uni:" + str(cat).lower()) or \
-            next((k for k, c in cats.items() if c["label"].lower() == str(cat).lower()), "thesis")
+            next((k for k, c in cats.items() if c["label"].lower() == str(cat).lower()), default_cat)
     subs = []
     for s in plan.get("subtasks") or []:
         if not isinstance(s, dict):
@@ -329,13 +330,14 @@ def heuristic(app, task: dict, reason: str, partial: dict = None) -> dict:
 
     text = partial.get("title") or task["input_text"]
     cat = task.get("category") or partial.get("category") or ""
+    all_cats = app.categories()
     if not cat:
         low = text.lower()
-        for c in app.categories():
-            if c["kind"] == "course" and any(k in low for k in c["keywords"]):
+        for c in all_cats:
+            if any(k in low for k in c.get("keywords", [])):
                 cat = c["id"]
                 break
-        cat = cat or "thesis"
+        cat = cat or (all_cats[0]["id"] if all_cats else "thesis")
     est = partial.get("estimate_minutes")
     if not est:
         est = 180 if WORDS_L.search(text) else 45 if WORDS_S.search(text) else 90

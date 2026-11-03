@@ -956,3 +956,102 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   border-radius: 3px;
   flex-shrink: 0;
 }
+
+/* Modular Folder Widget Bar & Workspace Modal */
+.sources-widget-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 12px 0;
+  padding: 8px 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  align-items: center;
+}
+.source-widget-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  font-size: 11.5px;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.source-widget-chip:hover {
+  border-color: var(--accent);
+}
+.source-widget-chip.missing {
+  border-color: var(--warning-text);
+  opacity: 0.85;
+}
+.source-widget-path {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-widget-badge {
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.source-widget-chip.missing .source-widget-badge {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+.ws-sources-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ws-source-card {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ws-source-top {
+  display: grid;
+  grid-template-columns: auto 1.2fr 1.3fr 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+.ws-source-path-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.ws-source-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+.ws-inherited-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(225px, 1fr));
+  gap: 6px;
+  max-height: 185px;
+  overflow-y: auto;
+  padding: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}

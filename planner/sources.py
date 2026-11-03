@@ -37,50 +37,188 @@ class SourceError(Exception):
 
 
 # ---------------------------------------------------------------- categories
+DEFAULT_SKIP_DIRS = ["data", "external", ".git", "node_modules", "__pycache__",
+                     ".venv", "venv", "build", "dist", ".ipynb_checkpoints",
+                     "wandb", "outputs", "checkpoints", "logs"]
+
+
+def _slug(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").strip().lower()).strip("-")
+    return s or "folder"
+
+
+def get_configured_sources(cfg: dict) -> list:
+    """Returns modular folder sources from cfg['sources'], or synthesizes them
+    from legacy cfg['thesis'] and cfg['university'] if cfg['sources'] is not set."""
+    cals = cfg.get("calendars") or {}
+    default_thesis_cal = cals.get("thesis") or "Thesis"
+    default_uni_cal = cals.get("university") or "University"
+
+    raw_sources = cfg.get("sources")
+    if not isinstance(raw_sources, list):
+        raw_sources = []
+        t = cfg.get("thesis") or {}
+        if t.get("root") or t.get("label"):
+            raw_sources.append({
+                "id": "thesis",
+                "label": t.get("label") or "Thesis",
+                "path": t.get("root") or "",
+                "mode": "single",
+                "calendar": default_thesis_cal,
+                "exclude": [],
+                "skip_dirs": list(t.get("skip_dirs") or DEFAULT_SKIP_DIRS),
+                "enabled": True,
+            })
+        u = cfg.get("university") or {}
+        if u.get("root"):
+            raw_sources.append({
+                "id": "uni",
+                "label": u.get("label") or "University Courses",
+                "path": u.get("root") or "",
+                "mode": "subfolders",
+                "calendar": default_uni_cal,
+                "exclude": list(u.get("exclude") or []),
+                "skip_dirs": [".git", "__pycache__", "node_modules", ".venv", "venv"],
+                "enabled": True,
+            })
+
+    out = []
+    seen_ids = set()
+    for idx, src in enumerate(raw_sources):
+        if not isinstance(src, dict):
+            continue
+        label = (src.get("label") or f"Folder {idx + 1}").strip()
+        sid = (src.get("id") or _slug(label)).strip()
+        if sid in seen_ids:
+            sid = f"{sid}-{idx + 1}"
+        seen_ids.add(sid)
+
+        raw_path = (src.get("path") or src.get("root") or "").strip()
+        resolved = expand(raw_path) if raw_path else ""
+        exists = bool(resolved and os.path.isdir(resolved))
+        mode = (src.get("mode") or "single").strip().lower()
+        if mode not in ("single", "subfolders"):
+            mode = "single"
+        cal = (src.get("calendar") or (default_uni_cal if mode == "subfolders" else default_thesis_cal)).strip()
+        excl = [str(e).strip() for e in (src.get("exclude") or []) if str(e).strip()]
+        skip_dirs = [str(s).strip() for s in (src.get("skip_dirs") or DEFAULT_SKIP_DIRS) if str(s).strip()]
+        enabled = src.get("enabled", True) is not False
+
+        item_count = 0
+        subfolders_preview = []
+        if exists:
+            try:
+                excl_low = {e.lower() for e in excl}
+                skip_set = set(skip_dirs)
+                entries = sorted(os.listdir(resolved))
+                for name in entries:
+                    if name.startswith("."):
+                        continue
+                    full = os.path.join(resolved, name)
+                    if mode == "subfolders":
+                        if os.path.isdir(full) and name.strip().lower() not in excl_low:
+                            item_count += 1
+                            subfolders_preview.append(name)
+                    else:
+                        if name not in skip_set:
+                            item_count += 1
+            except OSError:
+                pass
+
+        out.append({
+            "id": sid,
+            "label": label,
+            "path": raw_path,
+            "resolved_path": resolved,
+            "exists": exists,
+            "mode": mode,
+            "calendar": cal,
+            "exclude": excl,
+            "skip_dirs": skip_dirs,
+            "enabled": enabled,
+            "item_count": item_count,
+            "subfolders": subfolders_preview[:30],
+        })
+    return out
+
+
 def categories(cfg: dict) -> list:
     out = []
-    t = cfg["thesis"]
-    troot = expand(t["root"])
-    out.append({"id": "thesis", "label": t.get("label", "Thesis"), "kind": "thesis",
-                "root": troot, "exists": os.path.isdir(troot),
-                "calendar": cfg["calendars"]["thesis"], "keywords": ["thesis"]})
-    KNOWN_COURSES = ["GENERATIVE AI", "HYBRID QUANTUM", "KNOWLEDGE REPRESENTATION", "PROJECT IN LOGIC AND AI"]
-    uroot = expand(cfg["university"]["root"])
-    excl = {e.strip().lower() for e in cfg["university"].get("exclude", [])}
-    aliases = cfg["university"].get("aliases", {})
-    entries = []
-    if os.path.isdir(uroot):
-        try:
-            entries = sorted(os.listdir(uroot))
-        except OSError:
-            entries = []
-    if not entries:
-        entries = KNOWN_COURSES
-
-    for name in entries:
-        p = os.path.join(uroot, name)
-        if name.startswith(".") or name.strip().lower() in excl:
+    aliases = (cfg.get("university") or {}).get("aliases") or {}
+    for src in get_configured_sources(cfg):
+        if not src.get("enabled", True):
             continue
-        kw = [w for w in re.findall(r"[a-zà-ü0-9.]+", name.lower()) if len(w) >= 3 and w not in STOP]
-        kw += [a.lower() for a in aliases.get(name, [])]
-        exists = os.path.isdir(p)
-        out.append({"id": "uni:" + name, "label": name.strip().title(), "kind": "course",
-                    "root": p, "exists": exists,
-                    "calendar": cfg["calendars"]["university"], "keywords": kw})
+        sid = src["id"]
+        label = src["label"]
+        root = src["resolved_path"]
+        exists = src["exists"]
+        cal = src["calendar"]
+        skip_dirs = src.get("skip_dirs") or DEFAULT_SKIP_DIRS
+
+        if src["mode"] == "single":
+            cat_id = "thesis" if sid == "thesis" else sid
+            kind = "thesis" if sid == "thesis" else "project"
+            kw = [w for w in re.findall(r"[a-zà-ü0-9.]+", (label + " " + os.path.basename(root)).lower())
+                  if len(w) >= 3 and w not in STOP]
+            if sid == "thesis" and "thesis" not in kw:
+                kw.append("thesis")
+            out.append({
+                "id": cat_id,
+                "label": label,
+                "kind": kind,
+                "root": root,
+                "raw_root": src["path"],
+                "exists": exists,
+                "calendar": cal,
+                "keywords": kw,
+                "skip_dirs": skip_dirs,
+                "source_id": sid,
+            })
+        else:
+            prefix = "uni:" if sid in ("uni", "university") else f"{sid}:"
+            excl = {e.strip().lower() for e in (src.get("exclude") or [])}
+            entries = []
+            if exists and root:
+                try:
+                    entries = sorted(os.listdir(root))
+                except OSError:
+                    entries = []
+            for name in entries:
+                p = os.path.join(root, name)
+                if name.startswith(".") or name.strip().lower() in excl or not os.path.isdir(p):
+                    continue
+                kw = [w for w in re.findall(r"[a-zà-ü0-9.]+", name.lower()) if len(w) >= 3 and w not in STOP]
+                kw += [a.lower() for a in aliases.get(name, [])]
+                disp = name.strip().title() if name.strip().isupper() else name.strip()
+                out.append({
+                    "id": prefix + name,
+                    "label": disp,
+                    "kind": "course",
+                    "root": p,
+                    "raw_root": os.path.join(src["path"], name),
+                    "exists": True,
+                    "calendar": cal,
+                    "keywords": kw,
+                    "skip_dirs": skip_dirs,
+                    "source_id": sid,
+                })
     return out
 
 
 def get_category(cfg: dict, cat_id: str) -> dict:
-    for c in categories(cfg):
+    cats = categories(cfg)
+    for c in cats:
         if c["id"] == cat_id or c["label"].lower() == (cat_id or "").lower():
             return c
     raise SourceError("unknown category %r (known: %s)" % (
-        cat_id, ", ".join(c["id"] for c in categories(cfg))))
+        cat_id, ", ".join(c["id"] for c in cats)))
 
 
 def resolve(cat: dict, rel: str) -> str:
     rel = (rel or "").strip().lstrip("/")
     root = cat["root"]
+    if not root:
+        raise SourceError("folder path is not configured for %s" % cat.get("label", "category"))
     path = os.path.realpath(os.path.join(root, rel))
     if os.path.commonpath([root, path]) != root:
         raise SourceError("path escapes the %s folder" % cat["label"])
@@ -88,7 +226,9 @@ def resolve(cat: dict, rel: str) -> str:
 
 
 def _skip_dirs(cfg: dict, cat: dict) -> set:
-    return set(cfg["thesis"].get("skip_dirs", [])) if cat["kind"] == "thesis" else {".git", "__pycache__"}
+    if cat.get("skip_dirs"):
+        return set(cat["skip_dirs"])
+    return set((cfg.get("thesis") or {}).get("skip_dirs", [])) if cat["kind"] in ("thesis", "project") else {".git", "__pycache__"}
 
 
 def _human(n: int) -> str:

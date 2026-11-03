@@ -151,6 +151,9 @@ final class PlannerAppDelegate: NSObject, NSApplicationDelegate, WKNavigationDel
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
         var candidates: [String] = []
+        if let saved = UserDefaults.standard.string(forKey: "PlannerProjectRoot"), !saved.isEmpty {
+            candidates.append(saved)
+        }
         if let configured = Bundle.main.object(forInfoDictionaryKey: "ProjectRoot") as? String, !configured.isEmpty {
             candidates.append(configured)
         }
@@ -158,11 +161,29 @@ final class PlannerAppDelegate: NSObject, NSApplicationDelegate, WKNavigationDel
             "\(home)/Desktop/personal-planner",
             "\(home)/Desktop/Planner",
             "\(home)/personal-planner",
-            "\(home)/Planner"
+            "\(home)/Planner",
+            "\(home)/Projects/personal-planner",
+            "\(home)/Documents/personal-planner",
+            "\(home)/Documents/GitHub/personal-planner"
         ])
         for cand in candidates {
             if fm.fileExists(atPath: "\(cand)/planner/cli.py") {
+                UserDefaults.standard.set(cand, forKey: "PlannerProjectRoot")
                 return cand
+            }
+        }
+        // Prompt user to locate the repository folder if moved to an unknown location
+        let panel = NSOpenPanel()
+        panel.title = "Locate Planner Repository Folder"
+        panel.message = "Select the 'personal-planner' folder containing the Planner source code:"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            let chosen = url.path
+            if fm.fileExists(atPath: "\(chosen)/planner/cli.py") {
+                UserDefaults.standard.set(chosen, forKey: "PlannerProjectRoot")
+                return chosen
             }
         }
         return candidates.first ?? "\(home)/Desktop/personal-planner"

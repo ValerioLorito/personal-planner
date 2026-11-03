@@ -31,26 +31,8 @@
     "thesis": "Thesis",
     "university": "University",
     "habits": "Habits",
-    "read_also": [
-      "UNIVERSITÀ ",
-      "Calendario",
-      "Casa",
-      "Lavoro",
-      "Scadenze",
-      "BANDI/SCADENZE",
-      "Valerio LORITO",
-      "valeriolorito00@gmail.com",
-      "Famiglia",
-      "JE SO PAZZO"
-    ],
-    "ignore": [
-      "Birthdays",
-      "Siri Suggestions",
-      "Scheduled Reminders",
-      "Festività in Italia",
-      "Festività italiane",
-      "Holidays"
-    ]
+    "read_also": [],
+    "ignore": []
   },
   "work": {
     "days": [
@@ -92,5 +74,75 @@
     "days_back": 60,
     "days_ahead": 120
   },
-  "kit_path": ""
+  "kit_path": "",
+  "sources": [
+    {
+      "id": "thesis",
+      "label": "Thesis",
+      "path": "~/Desktop/commonsense-atlas",
+      "mode": "single",
+      "calendar": "Thesis",
+      "exclude": [],
+      "skip_dirs": [
+        "data",
+        "external",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "build",
+        "dist",
+        ".ipynb_checkpoints",
+        "wandb",
+        "outputs",
+        "checkpoints",
+        "logs"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "uni",
+      "label": "University Courses",
+      "path": "~/Desktop/iCloud/SAPIENZA/ERASMUS",
+      "mode": "subfolders",
+      "calendar": "University",
+      "exclude": [
+        "OeAD"
+      ],
+      "skip_dirs": [
+        ".git",
+        "__pycache__",
+        "node_modules",
+        ".venv",
+        "venv"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "aspex-project-in-logic-and-ai",
+      "label": "Aspex - Project in Logic and AI",
+      "path": "~/Desktop/aspex",
+      "mode": "subfolders",
+      "calendar": "University",
+      "exclude": [],
+      "skip_dirs": [
+        "data",
+        "external",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "build",
+        "dist",
+        ".ipynb_checkpoints",
+        "wandb",
+        "outputs",
+        "checkpoints",
+        "logs"
+      ],
+      "enabled": true
+    }
+  ]
 }

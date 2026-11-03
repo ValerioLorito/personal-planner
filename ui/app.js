@@ -7,6 +7,7 @@ let S = {
   beliefs: [],
   events: [],
   calendars_list: [],
+  sources: [],
   categories: [],
   config: {},
   llm_budget: {},
@@ -41,6 +42,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initMemoryView();
   initCalendarAuth();
   initLLMSettings();
+  initWorkspaceSettings();
   initEventInspector();
   
   loadState();
@@ -131,8 +133,8 @@ function initGlobalDismiss() {
     const mods = openModals();
     if (mods.length) dismiss(mods[mods.length - 1]);
   });
-  // Forms people type into (API key, new habit) only close via Esc / buttons, not stray clicks.
-  const sticky = new Set(['modal-llm', 'modal-habit']);
+  // Forms people type into (API key, new habit, workspace config) only close via Esc / buttons, not stray clicks.
+  const sticky = new Set(['modal-llm', 'modal-habit', 'modal-workspace']);
   document.querySelectorAll('.modal-backdrop').forEach(m => {
     if (sticky.has(m.id)) return;
     m.addEventListener('mousedown', e => { if (e.target === m) dismiss(m); });
@@ -216,6 +218,16 @@ function updateStatusPills() {
   const label = modelShort ? `${prov} (${modelShort}) ${b.used || 0}/${b.limit || 1500}` : `${prov} ${b.used || 0}/${b.limit || 1500}`;
   document.getElementById('ai-budget-text').textContent = label;
 
+  // Workspace / Folders pill
+  const wsLbl = document.getElementById('workspace-status-label');
+  if (wsLbl) {
+    const enabledSources = (S.sources || []).filter(s => s.enabled !== false);
+    const catCount = (S.categories || []).length;
+    wsLbl.textContent = enabledSources.length
+      ? `📁 ${enabledSources.length} Folder${enabledSources.length === 1 ? '' : 's'} · ${catCount} Categor${catCount === 1 ? 'y' : 'ies'}`
+      : '📁 Choose Folders…';
+  }
+
   // Badges
   document.getElementById('task-count').textContent = (S.tasks || []).length;
   document.getElementById('habit-count').textContent = (S.habits || []).length;
@@ -230,18 +242,86 @@ function updateStatusPills() {
   }
 }
 
+function formatCategoryLabel(catId) {
+  if (!catId) return 'General';
+  const found = (S.categories || []).find(c => c.id === catId);
+  if (found && found.label) return found.label;
+  if (catId === 'thesis') return 'Thesis';
+  return String(catId).replace(/^[^:]+:/, '').title();
+}
+
 function renderCategories() {
   const sel = document.getElementById('task-category');
-  if (!sel || !S.categories) return;
-  const curr = sel.value;
-  sel.innerHTML = '<option value="">Auto-detect category / Edit existing task</option>';
-  S.categories.forEach(c => {
-    const opt = document.createElement('option');
-    opt.value = c.id;
-    opt.textContent = `${c.label} (${c.kind === 'thesis' ? 'Thesis Repo' : 'Course Folder'})`;
-    sel.appendChild(opt);
+  if (sel && S.categories) {
+    const curr = sel.value;
+    sel.innerHTML = '<option value="">Auto-detect category / Edit existing task</option>';
+    S.categories.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      const kindLbl = c.kind === 'course' ? 'Subfolder' : 'Project Folder';
+      const statusSuffix = c.exists === false ? ' [folder not found]' : '';
+      opt.textContent = `${c.label} (${kindLbl} → ${c.calendar || 'Calendar'})${statusSuffix}`;
+      sel.appendChild(opt);
+    });
+    sel.value = curr;
+  }
+
+  // Dynamic placeholder based on user's configured categories
+  const taskInp = document.getElementById('task-input');
+  if (taskInp && S.categories && S.categories.length > 0) {
+    const sampleCat = S.categories[0].label;
+    taskInp.placeholder = `e.g. Plan next milestone for ${sampleCat}, or 'Move task to Friday at 15:00'...`;
+  }
+
+  renderSourcesWidgetBar();
+}
+
+function renderSourcesWidgetBar() {
+  const bar = document.getElementById('active-sources-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+
+  const sources = S.sources || [];
+  if (sources.length === 0) {
+    bar.innerHTML = `
+      <span style="font-size:12px;color:var(--text-muted)">No analysis folders configured yet.</span>
+      <button type="button" class="btn btn-sm btn-secondary" id="bar-btn-add-folder">+ Choose Folder for File Analysis…</button>
+    `;
+    const btn = bar.querySelector('#bar-btn-add-folder');
+    if (btn) btn.onclick = () => openWorkspaceModal();
+    return;
+  }
+
+  const titleSpan = document.createElement('span');
+  titleSpan.style.cssText = 'font-size:11px;font-weight:600;color:var(--text-muted);margin-right:2px;';
+  titleSpan.textContent = 'Analysis Folders:';
+  bar.appendChild(titleSpan);
+
+  sources.forEach(src => {
+    if (src.enabled === false) return;
+    const chip = document.createElement('div');
+    chip.className = `source-widget-chip ${src.exists ? '' : 'missing'}`;
+    const icon = src.mode === 'subfolders' ? '📂' : '📁';
+    const countTxt = src.exists
+      ? (src.mode === 'subfolders' ? `✓ ${src.item_count || 0} subfolders` : `✓ ${src.item_count || 0} items`)
+      : '⚠ Not found';
+    chip.title = `${src.label} (${src.path || 'no path'})\nTarget Calendar: ${src.calendar || 'Default'}\nClick to change folder or settings`;
+    chip.innerHTML = `
+      <span>${icon} <strong>${escapeHtml(src.label)}</strong></span>
+      <span class="source-widget-path">${escapeHtml(src.path || '(no path)')}</span>
+      <span class="source-widget-badge">${escapeHtml(countTxt)}</span>
+    `;
+    chip.addEventListener('click', () => openWorkspaceModal());
+    bar.appendChild(chip);
   });
-  sel.value = curr;
+
+  const addChip = document.createElement('button');
+  addChip.type = 'button';
+  addChip.className = 'chip';
+  addChip.style.marginLeft = 'auto';
+  addChip.textContent = '+ Add / Change Folders';
+  addChip.addEventListener('click', () => openWorkspaceModal());
+  bar.appendChild(addChip);
 }
 
 // --- SSE Real-time Feed ---
@@ -254,7 +334,7 @@ function connectSSE() {
         showToast(msg.data.message, msg.data.level);
       } else if (msg.kind === 'agent_trace') {
         appendTraceStep(msg.data);
-      } else if (msg.kind === 'tasks_changed' || msg.kind === 'habits_changed' || msg.kind === 'proposals_changed' || msg.kind === 'events_changed') {
+      } else if (msg.kind === 'tasks_changed' || msg.kind === 'habits_changed' || msg.kind === 'proposals_changed' || msg.kind === 'events_changed' || msg.kind === 'state_changed') {
         loadState();
       }
     } catch (err) {}
@@ -951,8 +1031,9 @@ function renderTasksList() {
   tasks.forEach(t => {
     const card = document.createElement('div');
     card.className = 'task-card';
-    const isThesis = t.category === 'thesis';
-    const catLabel = isThesis ? 'Thesis' : (t.category || '').replace('uni:', '').title();
+    const catObj = (S.categories || []).find(c => c.id === t.category);
+    const isPrimary = t.category === 'thesis' || (catObj && catObj.kind !== 'course');
+    const catLabel = formatCategoryLabel(t.category);
 
     card.innerHTML = `
       <div class="task-card-top">
@@ -964,7 +1045,7 @@ function renderTasksList() {
         </div>
       </div>
       <div class="task-badges">
-        <span class="pill ${isThesis ? 'pill-thesis' : 'pill-course'}">${catLabel}</span>
+        <span class="pill ${isPrimary ? 'pill-thesis' : 'pill-course'}">${escapeHtml(catLabel)}</span>
         <span class="pill pill-cx">${t.complexity || 'M'} · ~${t.estimate_minutes || 60}m</span>
         ${t.deadline ? `<span class="pill pill-deadline" style="cursor:pointer" title="Click to edit deadline">Due ${t.deadline.slice(5,16).replace('T',' ')}</span>` : ''}
         ${t.deep_work ? '<span class="pill pill-cx">Deep Work</span>' : ''}
@@ -1024,8 +1105,7 @@ function renderTaskDrawer(taskId) {
   const drawer = document.getElementById('task-drawer');
   drawer.style.display = 'flex';
 
-  const isThesis = t.category === 'thesis';
-  document.getElementById('drawer-cat').textContent = isThesis ? 'Thesis' : (t.category || '').replace('uni:', '');
+  document.getElementById('drawer-cat').textContent = formatCategoryLabel(t.category);
   document.getElementById('drawer-title').textContent = t.title || t.input_text;
   document.getElementById('drawer-summary').textContent = t.summary || t.rationale || 'No summary generated.';
 
@@ -1891,6 +1971,16 @@ function openBeliefDialog(belief = null) {
   const isEdit = !!(belief && belief.id);
 
   $('m-belief-title').textContent = isEdit ? 'Edit Agent Belief' : 'Add Agent Belief';
+  scopeEl.innerHTML = `
+    <option value="global">Global (All planning &amp; scheduling)</option>
+    <option value="habits">Habits &amp; Routines</option>
+  `;
+  (S.categories || []).forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = `${c.label} (${c.kind === 'course' ? 'Subfolder' : 'Project Folder'})`;
+    scopeEl.appendChild(opt);
+  });
   scopeEl.value = (belief && belief.scope) || 'global';
   if (belief && belief.scope && !Array.from(scopeEl.options).some(o => o.value === belief.scope)) {
     const opt = document.createElement('option');
@@ -1942,6 +2032,8 @@ async function renderMemoryView() {
     const cal = await res.json();
 
     const stats = document.getElementById('calibration-stats');
+    const firstCat = (S.categories && S.categories[0]) ? S.categories[0] : { id: 'thesis', label: 'Primary Folder' };
+    const firstCatRatio = ((cal.categories || {})[firstCat.id] || {}).ratio || 1.0;
     stats.innerHTML = `
       <div class="cal-stat-box">
         <div class="cal-stat-val">${cal.overall.ratio}×</div>
@@ -1952,8 +2044,8 @@ async function renderMemoryView() {
         <div class="cal-stat-lbl">Completed Tasks</div>
       </div>
       <div class="cal-stat-box">
-        <div class="cal-stat-val">${(cal.categories['thesis'] || {}).ratio || 1.0}×</div>
-        <div class="cal-stat-lbl">Thesis Multiplier</div>
+        <div class="cal-stat-val">${firstCatRatio}×</div>
+        <div class="cal-stat-lbl">${escapeHtml(firstCat.label)} Multiplier</div>
       </div>
     `;
 
@@ -2121,6 +2213,362 @@ function initCalendarAuth() {
       loadState();
     });
   }
+}
+
+let wsDraftSources = [];
+
+function initWorkspaceSettings() {
+  const modal = document.getElementById('modal-workspace');
+  if (!modal) return;
+
+  ['workspace-status', 'cal-status', 'btn-manage-folders', 'btn-sidebar-workspace'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', () => openWorkspaceModal());
+  });
+
+  document.getElementById('ws-close').addEventListener('click', () => { modal.style.display = 'none'; });
+  document.getElementById('ws-cancel').addEventListener('click', () => { modal.style.display = 'none'; });
+
+  document.querySelectorAll('#ws-work-days .day-btn').forEach(b => {
+    b.addEventListener('click', () => b.classList.toggle('active'));
+  });
+
+  document.getElementById('ws-btn-add-source').addEventListener('click', () => {
+    const defaultCal = document.getElementById('ws-cal-thesis').value.trim() || 'Thesis';
+    wsDraftSources.push({
+      id: 'folder-' + (wsDraftSources.length + 1),
+      label: 'New Folder',
+      path: '',
+      mode: 'single',
+      calendar: defaultCal,
+      exclude: [],
+      enabled: true,
+      exists: false,
+      item_count: 0,
+      subfolders: []
+    });
+    renderWsSourcesList();
+  });
+
+  document.getElementById('ws-btn-pick-new').addEventListener('click', async () => {
+    const btn = document.getElementById('ws-btn-pick-new');
+    btn.disabled = true;
+    btn.textContent = 'Opening Finder…';
+    try {
+      const res = await api('/api/config/pick_folder', {
+        method: 'POST',
+        body: { prompt: 'Select a project, course, or workspace folder for Planner file analysis:' }
+      });
+      if (res && res.ok && res.path) {
+        const hasManySubfolders = (res.subfolders || []).length >= 2;
+        const defaultCal = hasManySubfolders
+          ? (document.getElementById('ws-cal-uni').value.trim() || 'University')
+          : (document.getElementById('ws-cal-thesis').value.trim() || 'Thesis');
+        wsDraftSources.push({
+          id: '',
+          label: res.suggested_label || 'Workspace',
+          path: res.path,
+          mode: hasManySubfolders ? 'subfolders' : 'single',
+          calendar: defaultCal,
+          exclude: [],
+          enabled: true,
+          exists: true,
+          item_count: hasManySubfolders ? (res.subfolders || []).length : (res.item_count || 0),
+          subfolders: res.subfolders || []
+        });
+        renderWsSourcesList();
+        showToast(`Added folder: ${res.path}`, 'success');
+      }
+    } catch (e) {
+      showToast('Could not open folder picker: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '📁 Pick Folder in Finder…';
+    }
+  });
+
+  document.getElementById('ws-cals-all').addEventListener('click', () => {
+    document.querySelectorAll('#ws-inherited-cals input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+  });
+  document.getElementById('ws-cals-none').addEventListener('click', () => {
+    document.querySelectorAll('#ws-inherited-cals input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+  });
+
+  document.getElementById('ws-save').addEventListener('click', async () => {
+    const btn = document.getElementById('ws-save');
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+      const calThesis = document.getElementById('ws-cal-thesis').value.trim() || 'Thesis';
+      const calUni = document.getElementById('ws-cal-uni').value.trim() || 'University';
+      const calHabits = document.getElementById('ws-cal-habits').value.trim() || 'Habits';
+
+      const ignoreList = [];
+      const readAlsoList = [];
+      document.querySelectorAll('#ws-inherited-cals input[type="checkbox"]').forEach(cb => {
+        const title = cb.dataset.calTitle;
+        if (!title) return;
+        if (cb.checked) {
+          readAlsoList.push(title);
+        } else {
+          ignoreList.push(title);
+        }
+      });
+
+      const workDays = [];
+      document.querySelectorAll('#ws-work-days .day-btn.active').forEach(b => {
+        workDays.push(parseInt(b.dataset.wday, 10));
+      });
+
+      const payload = {
+        sources: wsDraftSources,
+        calendars: {
+          thesis: calThesis,
+          university: calUni,
+          habits: calHabits,
+          ignore: ignoreList,
+          read_also: readAlsoList
+        },
+        work: {
+          days: workDays.length ? workDays : [0, 1, 2, 3, 4],
+          day_start: document.getElementById('ws-day-start').value || '09:00',
+          day_end: document.getElementById('ws-day-end').value || '19:00',
+          max_block_min: parseInt(document.getElementById('ws-max-block').value, 10) || 90,
+          max_day_min: parseInt(document.getElementById('ws-max-day').value, 10) || 360,
+          weekend_if_needed: document.getElementById('ws-weekend-needed').checked
+        }
+      };
+
+      await api('/api/config/workspace', {
+        method: 'POST',
+        body: payload
+      });
+      showToast('Workspace folders, calendars, and schedule saved!', 'success');
+      modal.style.display = 'none';
+      loadState();
+    } catch (e) {
+      showToast('Failed to save workspace settings: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Save Workspace Settings';
+    }
+  });
+}
+
+async function openWorkspaceModal() {
+  const modal = document.getElementById('modal-workspace');
+  if (!modal) return;
+
+  try {
+    const data = await api('/api/config/workspace');
+    wsDraftSources = (data.sources || []).map(s => ({ ...s }));
+    const calsCfg = data.calendars || {};
+    const calsList = data.calendars_list || S.calendars_list || [];
+    const workCfg = data.work || {};
+
+    // Populate writable calendars datalist
+    const dl = document.getElementById('ws-cal-datalist');
+    dl.innerHTML = '';
+    calsList.filter(c => c.writable !== false).forEach(c => {
+      const cName = (c.name || c.title || '').trim();
+      if (!cName) return;
+      const opt = document.createElement('option');
+      opt.value = cName;
+      opt.textContent = `${cName} (${c.source || 'Local'})`;
+      dl.appendChild(opt);
+    });
+
+    document.getElementById('ws-cal-thesis').value = calsCfg.thesis || 'Thesis';
+    document.getElementById('ws-cal-uni').value = calsCfg.university || 'University';
+    document.getElementById('ws-cal-habits').value = calsCfg.habits || 'Habits';
+
+    renderWsSourcesList();
+
+    // Populate inherited calendars checkboxes
+    const inhContainer = document.getElementById('ws-inherited-cals');
+    inhContainer.innerHTML = '';
+    const ownedSet = new Set([calsCfg.thesis, calsCfg.university, calsCfg.habits].map(x => (x || '').trim().toLowerCase()));
+    const ignoreSet = new Set((calsCfg.ignore || []).map(x => (x || '').trim().toLowerCase()));
+    const externalCals = calsList.filter(c => {
+      const cName = (c.name || c.title || '').trim();
+      return cName && !ownedSet.has(cName.toLowerCase());
+    });
+
+    if (externalCals.length === 0) {
+      inhContainer.innerHTML = '<span style="font-size:11px;color:var(--text-dim)">No additional calendars found in Apple Calendar.</span>';
+    } else {
+      externalCals.forEach(c => {
+        const cName = (c.name || c.title || '').trim();
+        const rawSrc = (c.source || 'Local').trim();
+        const srcShort = rawSrc.includes('@') ? 'Uni/Exch' : rawSrc.replace('Subscribed Calendars', 'Sub');
+        const isEnabled = !ignoreSet.has(cName.toLowerCase());
+        const lbl = document.createElement('label');
+        lbl.style.cssText = 'display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer;overflow:hidden;padding:4px 6px;border-radius:4px;';
+        lbl.title = `${cName} (${rawSrc})`;
+        lbl.innerHTML = `
+          <input type="checkbox" data-cal-title="${escapeHtml(cName)}" ${isEnabled ? 'checked' : ''} style="flex-shrink:0">
+          <span style="flex:1;min-width:0;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(cName)}</span>
+          <span class="cal-source-badge" style="margin-left:auto;flex-shrink:0">${escapeHtml(srcShort)}</span>
+        `;
+        inhContainer.appendChild(lbl);
+      });
+    }
+
+    // Populate working hours
+    const activeDays = workCfg.days || [0, 1, 2, 3, 4];
+    document.querySelectorAll('#ws-work-days .day-btn').forEach(b => {
+      b.classList.toggle('active', activeDays.includes(parseInt(b.dataset.wday, 10)));
+    });
+    document.getElementById('ws-day-start').value = workCfg.day_start || '09:00';
+    document.getElementById('ws-day-end').value = workCfg.day_end || '19:00';
+    document.getElementById('ws-max-block').value = workCfg.max_block_min || 90;
+    document.getElementById('ws-max-day').value = workCfg.max_day_min || 360;
+    document.getElementById('ws-weekend-needed').checked = workCfg.weekend_if_needed !== false;
+  } catch (e) {
+    showToast('Failed to load workspace settings: ' + e.message, 'error');
+  }
+
+  modal.style.display = 'flex';
+}
+
+function renderWsSourcesList() {
+  const container = document.getElementById('ws-sources-list');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (wsDraftSources.length === 0) {
+    container.innerHTML = '<div style="padding:14px;text-align:center;color:var(--text-dim);font-size:12px">No folders configured. Click <strong>📁 Pick Folder in Finder…</strong> above to add one!</div>';
+    return;
+  }
+
+  wsDraftSources.forEach((src, idx) => {
+    const card = document.createElement('div');
+    card.className = 'ws-source-card';
+    const exclStr = Array.isArray(src.exclude) ? src.exclude.join(', ') : (src.exclude || '');
+    const statusColor = src.exists ? 'var(--success-text)' : 'var(--warning-text)';
+    const statusText = src.exists
+      ? (src.mode === 'subfolders'
+          ? `✓ Found (${src.item_count || 0} subfolder categories${(src.subfolders && src.subfolders.length) ? ': ' + src.subfolders.slice(0, 6).join(', ') : ''})`
+          : `✓ Found (${src.item_count || 0} top-level files/folders)`)
+      : (src.path ? '⚠ Folder not found on disk' : 'Choose or enter a folder path below');
+
+    card.innerHTML = `
+      <div class="ws-source-top">
+        <div class="form-group" style="align-items:center">
+          <label title="Enable or disable this folder">Active</label>
+          <input type="checkbox" class="ws-src-enabled" ${src.enabled !== false ? 'checked' : ''} style="width:16px;height:16px;margin-top:6px">
+        </div>
+        <div class="form-group">
+          <label>Label</label>
+          <input type="text" class="input-text ws-src-label" value="${escapeHtml(src.label || '')}" placeholder="e.g. Thesis, Courses, Work">
+        </div>
+        <div class="form-group">
+          <label>Analysis Mode</label>
+          <select class="select ws-src-mode">
+            <option value="single" ${src.mode !== 'subfolders' ? 'selected' : ''}>Single Project / Repo Folder</option>
+            <option value="subfolders" ${src.mode === 'subfolders' ? 'selected' : ''}>Subfolders = Separate Categories (Courses / Projects)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Target Calendar</label>
+          <input type="text" list="ws-cal-datalist" class="input-text ws-src-cal" value="${escapeHtml(src.calendar || '')}" placeholder="e.g. Thesis">
+        </div>
+        <button type="button" class="btn btn-sm btn-icon ws-src-del" title="Remove this folder source" style="margin-bottom:2px">✕</button>
+      </div>
+      <div class="ws-source-path-row">
+        <input type="text" class="input-text ws-src-path flex-1" value="${escapeHtml(src.path || '')}" placeholder="~/Desktop/my-project or /Users/..." style="font-family:var(--mono);font-size:12px">
+        <button type="button" class="btn btn-sm btn-secondary ws-src-browse" style="white-space:nowrap">📁 Browse…</button>
+      </div>
+      <div class="ws-src-excl-row" style="display:${src.mode === 'subfolders' ? 'flex' : 'none'};gap:8px;align-items:center">
+        <label style="font-size:11px;color:var(--text-muted);white-space:nowrap">Ignore subfolders (comma-separated):</label>
+        <input type="text" class="input-text ws-src-excl flex-1" value="${escapeHtml(exclStr)}" placeholder="e.g. Archive, OeAD, .git" style="font-size:11.5px;padding:4px 8px">
+      </div>
+      <div class="ws-source-status">
+        <span class="ws-src-status-lbl" style="color:${statusColor}">${escapeHtml(statusText)}</span>
+      </div>
+    `;
+
+    const enabledEl = card.querySelector('.ws-src-enabled');
+    const labelEl = card.querySelector('.ws-src-label');
+    const modeEl = card.querySelector('.ws-src-mode');
+    const calEl = card.querySelector('.ws-src-cal');
+    const pathEl = card.querySelector('.ws-src-path');
+    const exclRow = card.querySelector('.ws-src-excl-row');
+    const exclEl = card.querySelector('.ws-src-excl');
+    const statusLbl = card.querySelector('.ws-src-status-lbl');
+    const browseBtn = card.querySelector('.ws-src-browse');
+    const delBtn = card.querySelector('.ws-src-del');
+
+    const inspectNow = async () => {
+      const p = pathEl.value.trim();
+      src.path = p;
+      src.mode = modeEl.value;
+      src.exclude = exclEl.value.split(',').map(x => x.trim()).filter(Boolean);
+      if (!p) {
+        src.exists = false;
+        statusLbl.style.color = 'var(--warning-text)';
+        statusLbl.textContent = 'Choose or enter a folder path';
+        return;
+      }
+      try {
+        const info = await api('/api/config/inspect_folder', {
+          method: 'POST',
+          body: { path: p, mode: src.mode, exclude: src.exclude }
+        });
+        src.exists = !!info.exists;
+        src.item_count = info.count || 0;
+        src.subfolders = info.items || [];
+        statusLbl.style.color = src.exists ? 'var(--success-text)' : 'var(--warning-text)';
+        statusLbl.textContent = src.exists
+          ? (src.mode === 'subfolders'
+              ? `✓ Found (${src.item_count} subfolder categories${src.subfolders.length ? ': ' + src.subfolders.slice(0, 6).join(', ') : ''})`
+              : `✓ Found (${src.item_count} top-level files/folders)`)
+          : '⚠ Folder not found on disk';
+      } catch (_) {}
+    };
+
+    enabledEl.onchange = () => { src.enabled = enabledEl.checked; };
+    labelEl.oninput = () => { src.label = labelEl.value; };
+    calEl.oninput = () => { src.calendar = calEl.value; };
+    modeEl.onchange = () => {
+      src.mode = modeEl.value;
+      exclRow.style.display = src.mode === 'subfolders' ? 'flex' : 'none';
+      inspectNow();
+    };
+    pathEl.onchange = inspectNow;
+    exclEl.onchange = inspectNow;
+
+    browseBtn.onclick = async () => {
+      browseBtn.disabled = true;
+      browseBtn.textContent = 'Opening…';
+      try {
+        const res = await api('/api/config/pick_folder', {
+          method: 'POST',
+          body: { prompt: `Select folder for "${src.label || 'Analysis'}":` }
+        });
+        if (res && res.ok && res.path) {
+          pathEl.value = res.path;
+          if (!labelEl.value.trim() || labelEl.value === 'New Folder') {
+            labelEl.value = res.suggested_label || 'Folder';
+            src.label = labelEl.value;
+          }
+          await inspectNow();
+        }
+      } catch (e) {
+        showToast('Folder picker error: ' + e.message, 'error');
+      } finally {
+        browseBtn.disabled = false;
+        browseBtn.textContent = '📁 Browse…';
+      }
+    };
+
+    delBtn.onclick = () => {
+      wsDraftSources.splice(idx, 1);
+      renderWsSourcesList();
+    };
+
+    container.appendChild(card);
+  });
 }
 
 let currentInspectedEvent = null;

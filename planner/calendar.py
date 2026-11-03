@@ -125,12 +125,22 @@ class Calendar:
             return {"ok": False, "error": str(e)}
 
     def ensure_planner_calendars(self) -> list:
+        from . import sources
         made = []
         c = self.cfg["calendars"]
+        names = []
         for key in ("thesis", "university", "habits"):
-            r = self.ensure(c[key])
+            val = (c.get(key) or "").strip()
+            if val and val not in names:
+                names.append(val)
+        for src in sources.get_configured_sources(self.cfg):
+            val = (src.get("calendar") or "").strip()
+            if val and val not in names:
+                names.append(val)
+        for name in names:
+            r = self.ensure(name)
             if r.get("created"):
-                made.append(c[key])
+                made.append(name)
         return made
 
     # ---- reading ----

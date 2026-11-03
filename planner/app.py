@@ -99,8 +99,13 @@ class App:
             return None
 
     def calendar_for(self, cat_id: str) -> str:
+        cat = self.category(cat_id) if cat_id else None
+        if cat and cat.get("calendar"):
+            return cat["calendar"]
         c = self.cfg["calendars"]
-        return c["thesis"] if (cat_id or "thesis") == "thesis" else c["university"]
+        if (cat_id or "").startswith("uni:"):
+            return c.get("university") or c.get("thesis") or "Calendar"
+        return c.get("thesis") or c.get("university") or "Calendar"
 
     def save_config(self) -> None:
         config.save(self.cfg)
