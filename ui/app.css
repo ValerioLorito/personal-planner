@@ -330,16 +330,122 @@ body {
 .grid-hour-line { height: 50px; border-bottom: 1px dashed var(--grid-line); }
 
 .cal-event-tile {
-  position: absolute; left: 2px; right: 2px; border-radius: 4px; padding: 4px 6px;
+  position: absolute; left: 2px; right: 2px; border-radius: 5px; padding: 3px 6px;
   font-size: 11px; overflow: hidden; cursor: pointer; z-index: 2;
-  box-shadow: 0 1px 3px var(--shadow); transition: transform 0.1s;
+  box-shadow: 0 1px 3px var(--shadow);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  display: block;
 }
-.cal-event-tile:hover { transform: scale(1.02); z-index: 10; }
+.cal-event-tile:hover {
+  transform: translateY(-1px);
+  z-index: 35 !important;
+  height: auto !important;
+  min-height: var(--tile-h, 24px);
+  max-height: 180px;
+  box-shadow: 0 6px 18px var(--shadow-lg);
+}
 .cal-event-tile.block { background: var(--block-bg); border: 1px solid var(--block-border); color: var(--block-text); }
 .cal-event-tile.habit { background: var(--habit-bg); border: 1px solid var(--habit-border); color: var(--habit-text); }
 .cal-event-tile.meeting { background: var(--meeting-bg); border: 1px solid var(--meeting-border); color: var(--meeting-text); }
-.tile-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tile-time { font-size: 9px; opacity: 0.8; }
+
+.tile-title {
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 13.5px;
+  white-space: normal;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.tile-time {
+  font-size: 9.5px;
+  line-height: 12px;
+  opacity: 0.84;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+.tile-meta {
+  font-size: 9.5px;
+  line-height: 13px;
+  opacity: 0.9;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin-top: 3px;
+}
+.tile-meta-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.16);
+  font-size: 9px;
+  line-height: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tier 1: Tiny tiles (< 32px, e.g. 15–35 min) -> Title gets 100% priority (hide time & meta at rest) */
+.cal-event-tile.tile-xs {
+  padding: 2px 6px;
+}
+.cal-event-tile.tile-xs .tile-title {
+  -webkit-line-clamp: 1;
+  max-height: 14px;
+  white-space: nowrap;
+  display: block;
+  text-overflow: ellipsis;
+}
+.cal-event-tile.tile-xs .tile-time,
+.cal-event-tile.tile-xs .tile-meta {
+  display: none;
+}
+
+/* Tier 2: Small tiles (32px–45px, e.g. 40–50 min) -> Title up to 2 lines gets priority */
+.cal-event-tile.tile-sm .tile-title {
+  -webkit-line-clamp: 2;
+  max-height: 27px;
+}
+.cal-event-tile.tile-sm .tile-meta {
+  display: none;
+}
+
+/* Tier 3: Standard 1h+ tiles (46px–71px, e.g. 55–80 min) -> Title up to 2 lines + time */
+.cal-event-tile.tile-md .tile-title {
+  -webkit-line-clamp: 2;
+  max-height: 27px;
+}
+.cal-event-tile.tile-md .tile-meta {
+  display: none;
+}
+
+/* Tier 4: Tall tiles (>= 72px, e.g. 85+ min) -> Title up to 3 lines + time + location/video pill */
+.cal-event-tile.tile-lg .tile-title {
+  -webkit-line-clamp: 3;
+  max-height: 41px;
+}
+
+/* Hover reveals full untruncated title & time smoothly on the tile without any gray popup tooltip */
+.cal-event-tile:hover .tile-title {
+  white-space: normal !important;
+  display: block !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+.cal-event-tile:hover .tile-time {
+  display: block !important;
+  white-space: normal !important;
+}
+.cal-event-tile:hover .tile-meta {
+  display: flex !important;
+}
 
 .now-line {
   position: absolute; left: 0; right: 0; height: 2px; background: var(--accent);
@@ -353,7 +459,8 @@ body {
 }
 .now-line-badge {
   position: absolute;
-  left: 4px;
+  right: 4px;
+  left: auto;
   top: -9px;
   background: var(--accent);
   color: var(--on-accent);
@@ -1098,4 +1205,158 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
+}
+
+/* Detailed Event & Task Inspector Modal */
+.ev-type-pill {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.ev-type-pill.block {
+  background: var(--block-bg);
+  color: var(--block-text);
+  border: 1px solid var(--block-border);
+}
+.ev-type-pill.habit {
+  background: var(--habit-bg);
+  color: var(--habit-text);
+  border: 1px solid var(--habit-border);
+}
+.ev-type-pill.meeting {
+  background: var(--meeting-bg);
+  color: var(--meeting-text);
+  border: 1px solid var(--meeting-border);
+}
+.ev-quick-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.ev-btn-video {
+  background: var(--accent);
+  color: var(--on-accent) !important;
+  font-weight: 600;
+  text-decoration: none;
+  border: none;
+}
+.ev-btn-video:hover {
+  background: var(--accent-hover);
+}
+.ev-details-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+@media (max-width: 640px) {
+  .ev-details-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.ev-detected-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ev-detected-link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  text-decoration: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ev-detected-link-chip:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.ev-task-card {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ev-task-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ev-task-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--block-bg);
+  color: var(--block-text);
+  border: 1px solid var(--block-border);
+}
+.ev-task-summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.ev-task-subtasks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ev-subtask-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.ev-subtask-row.done span {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+.ev-task-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ev-file-chip {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
 }

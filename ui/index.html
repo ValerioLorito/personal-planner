@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Planner — Agentic Planner</title>
-  <link rel="stylesheet" href="app.css?v=20261103c">
+  <link rel="stylesheet" href="app.css?v=20261104b">
 </head>
 <body class="theme-ink">
   <header class="app-header">
@@ -288,7 +288,7 @@
           <h4 style="margin-top:20px">Recent Completion Samples</h4>
           <div class="samples-table-wrap">
             <table class="table" id="samples-table">
-              <thead><tr><th>Item</th><th>Category</th><th>Est</th><th>Actual</th><th>Ratio</th></tr></thead>
+              <thead><tr><th>Item</th><th>Category</th><th>Est</th><th>Actual</th><th>Ratio</th><th></th></tr></thead>
               <tbody></tbody>
             </table>
           </div>
@@ -408,25 +408,44 @@
     </div>
   </div>
 
-  <!-- Modal for Calendar Event Inspector (Rename / Reschedule / Delete) -->
+  <!-- Modal for Calendar Event & Task Block Inspector (Full Detail View / Edit / Delete) -->
   <div class="modal-backdrop" id="modal-event" style="display:none">
-    <div class="modal modal-wide">
+    <div class="modal modal-wide" style="max-width:660px">
       <div class="modal-header">
-        <h3 id="m-ev-calendar-title">Calendar Event</h3>
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          <span class="ev-type-pill" id="m-ev-type-badge">Event</span>
+          <h3 id="m-ev-calendar-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Calendar Event Details</h3>
+        </div>
         <button class="btn-icon" id="modal-event-close">✕</button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body" style="max-height:76vh;overflow-y:auto">
+        <!-- Quick Action Bar (Video Call, Maps, External Link, Task/Habit Shortcuts) -->
+        <div id="m-ev-quick-bar" class="ev-quick-bar" style="display:none">
+          <a id="m-ev-btn-video" class="btn btn-sm ev-btn-video" href="#" target="_blank" rel="noopener noreferrer" style="display:none">🎥 Join Video Call</a>
+          <a id="m-ev-btn-maps" class="btn btn-sm btn-secondary" href="#" target="_blank" rel="noopener noreferrer" style="display:none">📍 Open in Maps</a>
+          <a id="m-ev-btn-url" class="btn btn-sm btn-secondary" href="#" target="_blank" rel="noopener noreferrer" style="display:none">↗ Open Link</a>
+          <button type="button" class="btn btn-sm btn-secondary" id="m-ev-btn-open-task" style="display:none">→ Open in Tasks Drawer</button>
+          <button type="button" class="btn btn-sm btn-secondary" id="m-ev-btn-log-habit" style="display:none">✓ Log Habit Check-in</button>
+          <button type="button" class="btn btn-sm btn-secondary" id="m-ev-btn-edit-habit" style="display:none">✎ Edit Habit Schedule</button>
+        </div>
+
         <div class="form-group">
-          <label>Event Title</label>
-          <input type="text" id="m-ev-title" class="input-text">
+          <label for="m-ev-title">Title</label>
+          <input type="text" id="m-ev-title" class="input-text" placeholder="Event or task block title">
         </div>
+
         <div class="resched-preview" id="m-ev-preview-box">
-          <div>
+          <div style="min-width:0;flex:1">
             <div class="rp-when" id="m-ev-time">—</div>
-            <div class="rp-sub"><strong>Calendar:</strong> <span id="m-ev-cal-name"></span></div>
+            <div class="rp-sub">
+              <strong>Calendar:</strong> <span id="m-ev-cal-name"></span>
+              <span id="m-ev-recurrence-info" style="margin-left:8px;color:var(--accent)"></span>
+            </div>
+            <div class="rp-sub" id="m-ev-attendees-info" style="display:none;margin-top:3px"></div>
           </div>
-          <div class="rp-sub" id="m-ev-dur-label">—</div>
+          <div class="rp-sub" id="m-ev-dur-label" style="font-weight:600;white-space:nowrap">—</div>
         </div>
+
         <div id="m-ev-time-controls">
           <div class="resched-grid">
             <div class="form-group">
@@ -434,7 +453,7 @@
               <input type="date" id="m-ev-date" class="input-text">
             </div>
             <div class="form-group">
-              <label for="m-ev-start">Start</label>
+              <label for="m-ev-start">Start Time</label>
               <input type="time" id="m-ev-start" class="input-text" step="300">
             </div>
             <div class="form-group">
@@ -442,26 +461,65 @@
               <input type="number" id="m-ev-minutes" class="input-text" min="5" max="720" step="5">
             </div>
           </div>
-          <div class="form-group">
-            <label>Quick shift</label>
-            <div class="resched-quick" id="m-ev-quick-shift">
-              <button type="button" class="chip" data-ev-shift="-1440">− 1 day</button>
-              <button type="button" class="chip" data-ev-shift="-60">− 1 h</button>
-              <button type="button" class="chip" data-ev-shift="-15">− 15 min</button>
-              <button type="button" class="chip" data-ev-shift="15">+ 15 min</button>
-              <button type="button" class="chip" data-ev-shift="60">+ 1 h</button>
-              <button type="button" class="chip" data-ev-shift="1440">+ 1 day</button>
+          <div class="form-group" style="margin-bottom:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+              <div class="resched-quick" id="m-ev-quick-shift">
+                <button type="button" class="chip" data-ev-shift="-1440">− 1 day</button>
+                <button type="button" class="chip" data-ev-shift="-60">− 1 h</button>
+                <button type="button" class="chip" data-ev-shift="-15">− 15 min</button>
+                <button type="button" class="chip" data-ev-shift="15">+ 15 min</button>
+                <button type="button" class="chip" data-ev-shift="60">+ 1 h</button>
+                <button type="button" class="chip" data-ev-shift="1440">+ 1 day</button>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button type="button" class="btn btn-sm btn-secondary" id="m-ev-btn-resched" style="display:none" title="Move this block to the next free slot (subtasks automatically realign in sequential order)">⇄ Next Free Slot</button>
+                <button type="button" class="btn btn-sm btn-secondary" id="m-ev-btn-cascade" style="display:none" title="Push this subtask forward and cascade all following subtasks of this task in strict sequential order">⇣ Push &amp; Cascade Subtasks</button>
+              </div>
             </div>
           </div>
           <div class="resched-warn" id="m-ev-warn"></div>
+
+          <!-- Switch / Swap Slot with another Task Block -->
+          <div id="m-ev-swap-group" class="form-group" style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--r-md)">
+            <label for="m-ev-swap-select" style="margin-bottom:4px">⇄ Switch / Swap Calendar Slot With Another Task Block</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <select id="m-ev-swap-select" class="input-select" style="flex:1;min-width:0"></select>
+              <button type="button" class="btn btn-sm btn-secondary" id="m-ev-btn-swap" style="white-space:nowrap">⇄ Swap Slots</button>
+            </div>
+          </div>
         </div>
-        <div id="m-ev-notes-group" style="margin-top:8px;display:none">
-          <label style="font-size:11px;color:var(--text-dim)">Notes / Grounding</label>
-          <div id="m-ev-notes" style="font-size:12px;background:var(--bg-subtle);padding:8px;border-radius:4px;max-height:90px;overflow-y:auto;white-space:pre-wrap"></div>
+
+        <!-- Location / Position & Video Call / URL -->
+        <div class="ev-details-grid" id="m-ev-details-grid">
+          <div class="form-group" style="margin-bottom:0">
+            <label for="m-ev-location">📍 Location / Position / Room</label>
+            <input type="text" id="m-ev-location" class="input-text" placeholder="Address, building, room, or coordinates">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label for="m-ev-url">🔗 Video Call / Meeting Link</label>
+            <input type="url" id="m-ev-url" class="input-text" placeholder="https://meet.google.com/... or Zoom/Teams URL">
+          </div>
         </div>
-        <div id="m-ev-actions-row" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-sm btn-secondary" id="m-ev-btn-resched" style="display:none">⇄ Find Next Free Slot</button>
-          <button class="btn btn-sm btn-secondary" id="m-ev-btn-open-task" style="display:none">→ View Associated Task</button>
+
+        <!-- Description / Notes -->
+        <div id="m-ev-notes-group" class="form-group" style="margin-top:10px;margin-bottom:6px">
+          <label for="m-ev-notes-input">Description &amp; Notes</label>
+          <textarea id="m-ev-notes-input" class="input-textarea" rows="4" placeholder="Add description, agenda, links, or notes..."></textarea>
+          <div id="m-ev-detected-links" class="ev-detected-links" style="display:none"></div>
+        </div>
+
+        <!-- Associated Task Details Card (shown when event is a Planned Task Block) -->
+        <div id="m-ev-task-card" class="ev-task-card" style="display:none">
+          <div class="ev-task-card-header">
+            <div>
+              <span class="ev-task-badge">Linked Task</span>
+              <strong id="m-ev-task-title" style="margin-left:6px;font-size:13px"></strong>
+            </div>
+            <span id="m-ev-task-meta" style="font-size:11px;color:var(--text-muted)"></span>
+          </div>
+          <div id="m-ev-task-summary" class="ev-task-summary" style="display:none"></div>
+          <div id="m-ev-task-subtasks" class="ev-task-subtasks" style="display:none"></div>
+          <div id="m-ev-task-files" class="ev-task-files" style="display:none"></div>
         </div>
       </div>
       <div class="modal-footer" style="display:flex;justify-content:space-between">
@@ -470,7 +528,7 @@
           <button class="btn btn-danger btn-sm" id="m-ev-btn-delete-series" style="display:none">✕ Delete Entire Series</button>
         </div>
         <div style="display:flex;gap:6px">
-          <button class="btn btn-secondary btn-sm" id="modal-event-cancel">Cancel</button>
+          <button class="btn btn-secondary btn-sm" id="modal-event-cancel">Close</button>
           <button class="btn btn-primary btn-sm" id="m-ev-btn-save">Save Changes</button>
         </div>
       </div>
@@ -801,6 +859,6 @@
   <!-- Toast Container -->
   <div class="toast-container" id="toasts"></div>
 
-  <script src="app.js?v=20261103c"></script>
+  <script src="app.js?v=20261104b"></script>
 </body>
 </html>

@@ -633,7 +633,6 @@ function renderScheduleGrid() {
         const chip = document.createElement('div');
         chip.className = 'allday-chip';
         const calShort = (e.calendar || '').trim();
-        chip.title = `${calShort ? '[' + calShort + '] ' : ''}${e.title || 'All-day event'}`;
         chip.textContent = `${calShort ? '[' + calShort + '] ' : ''}${e.title || 'Event'}`;
         chip.addEventListener('click', () => openEventInspector(e, false));
         strip.appendChild(chip);
@@ -778,6 +777,134 @@ function updateRealtimeEventStates(now = new Date()) {
   });
 }
 
+function detectVideoProvider(url) {
+  if (!url) return null;
+  const u = url.toLowerCase();
+  if (u.includes('meet.google.com')) return 'Google Meet';
+  if (u.includes('zoom.us') || u.includes('zoom.com')) return 'Zoom Call';
+  if (u.includes('teams.microsoft.com') || u.includes('teams.live.com')) return 'Teams Call';
+  if (u.includes('webex.com')) return 'Webex';
+  if (u.includes('jit.si') || u.includes('jitsi')) return 'Jitsi Meet';
+  if (u.includes('whereby.com')) return 'Whereby';
+  if (u.includes('facetime.apple.com')) return 'FaceTime';
+  if (u.includes('discord.gg') || u.includes('discord.com')) return 'Discord';
+  return null;
+}
+
+function extractEventRichInfo(item, isBlock = false) {
+  const rawNotes = item.notes || '';
+  const rawLoc = (item.location || '').trim();
+  const rawUrl = (item.url || '').trim();
+
+  // Separate internal planner metadata lines from user-facing notes
+  const internalTags = [];
+  const cleanLines = [];
+  let blockId = item.block_id || (isBlock ? item.id : null);
+  let taskId = item.task_id || (item.task && item.task.id) || null;
+  let habitId = item.habit_id || null;
+
+  rawNotes.split('\n').forEach(line => {
+    const trimmed = line.trim();
+    const mBlock = trimmed.match(/planner:block=(\d+)/);
+    if (mBlock && !blockId) blockId = parseInt(mBlock[1], 10);
+    const mTask = trimmed.match(/Planner Task #(\d+)/i) || trimmed.match(/planner:task=(\d+)/);
+    if (mTask && !taskId) taskId = parseInt(mTask[1], 10);
+    const mHabit = trimmed.match(/planner:habit=(\d+)/);
+    if (mHabit && !habitId) habitId = parseInt(mHabit[1], 10);
+
+    if (/^planner:(block|habit|task)=\d+$/i.test(trimmed)) {
+      internalTags.push(trimmed);
+    } else {
+      cleanLines.push(line);
+    }
+  });
+
+  if (blockId && !taskId) {
+    (S.tasks || []).forEach(t => {
+      if ((t.blocks || []).some(b => b.id === blockId)) {
+        taskId = t.id;
+      }
+    });
+  }
+
+  const linkedTask = taskId ? (S.tasks || []).find(t => t.id === taskId) : null;
+  const linkedHabit = habitId
+    ? (S.habits || []).find(h => h.id === habitId)
+    : ((item.calendar || '').toLowerCase().includes('habits')
+      ? (S.habits || []).find(h => (h.name || '').toLowerCase() === (item.title || '').toLowerCase())
+      : null);
+  if (linkedHabit && !habitId) habitId = linkedHabit.id;
+
+  const cleanNotes = cleanLines.join('\n').trim();
+
+  // Collect all URLs across url, location, and notes
+  const urlRegex = /https?:\/\/[^\s<>"')]+/gi;
+  const allUrls = [];
+  const addUrl = u => {
+    const cleaned = u.replace(/[.,;!?]+$/, '');
+    if (cleaned && !allUrls.includes(cleaned)) allUrls.push(cleaned);
+  };
+  if (rawUrl && /^https?:\/\//i.test(rawUrl)) addUrl(rawUrl);
+  (rawLoc.match(urlRegex) || []).forEach(addUrl);
+  (rawNotes.match(urlRegex) || []).forEach(addUrl);
+
+  let videoUrl = null;
+  let videoProvider = null;
+  for (const u of allUrls) {
+    const prov = detectVideoProvider(u);
+    if (prov) {
+      videoUrl = u;
+      videoProvider = prov;
+      break;
+    }
+  }
+  if (!videoUrl && rawUrl && /^https?:\/\//i.test(rawUrl)) {
+    const prov = detectVideoProvider(rawUrl);
+    if (prov) {
+      videoUrl = rawUrl;
+      videoProvider = prov;
+    }
+  }
+
+  // Clean location (if location is just a URL, don't duplicate it as a physical address)
+  const cleanLocation = /^https?:\/\/\S+$/i.test(rawLoc) ? '' : rawLoc;
+
+  // Best description snippet for calendar tile preview (strip auto-generated Planner Task headers)
+  let descPreview = cleanNotes
+    .replace(/^Scheduled work block for task:\s*.+$/gim, '')
+    .replace(/^Planner Task #\d+.*$/gim, '')
+    .trim();
+  if (!descPreview && linkedTask && linkedTask.summary) {
+    descPreview = linkedTask.summary.trim();
+  }
+  if (descPreview && (item.title || '') && descPreview.toLowerCase() === (item.title || '').trim().toLowerCase()) {
+    descPreview = '';
+  }
+
+  return {
+    blockId,
+    taskId,
+    habitId,
+    linkedTask,
+    linkedHabit,
+    cleanNotes,
+    internalTags,
+    cleanLocation,
+    rawUrl,
+    allUrls,
+    videoUrl,
+    videoProvider,
+    descPreview
+  };
+}
+
+function getTileSizeClass(height) {
+  if (height < 32) return 'tile-xs';
+  if (height < 46) return 'tile-sm';
+  if (height < 72) return 'tile-md';
+  return 'tile-lg';
+}
+
 function createEventTile(e, startHour, hourHeight, type, headerOffset = 36, colIdx = 0, numCols = 1) {
   try {
     const s = new Date(e.start);
@@ -787,12 +914,17 @@ function createEventTile(e, startHour, hourHeight, type, headerOffset = 36, colI
     const top = ((startMins - startHour * 60) / 60) * hourHeight + headerOffset;
     const height = Math.max(22, ((endMins - startMins) / 60) * hourHeight);
 
+    const info = extractEventRichInfo(e, false);
+    const sizeClass = getTileSizeClass(height);
+
     const tile = document.createElement('div');
-    tile.className = `cal-event-tile ${type}`;
+    tile.className = `cal-event-tile ${type} ${sizeClass}`;
     tile.dataset.start = e.start;
     tile.dataset.end = e.end;
     tile.style.top = `${top}px`;
     tile.style.height = `${height}px`;
+    tile.style.setProperty('--tile-h', `${height}px`);
+
     if (numCols > 1) {
       const wPct = 94 / numCols;
       const lPct = 3 + colIdx * wPct;
@@ -802,9 +934,21 @@ function createEventTile(e, startHour, hourHeight, type, headerOffset = 36, colI
     }
     const calName = (e.calendar || '').trim();
     const showCalTag = calName && !['habits'].includes(calName.toLowerCase());
+
+    const metaPills = [];
+    if (info.videoUrl) {
+      metaPills.push(`<span class="tile-meta-pill">🎥 ${escapeHtml(info.videoProvider || 'Video')}</span>`);
+    }
+    if (info.cleanLocation) {
+      metaPills.push(`<span class="tile-meta-pill">📍 ${escapeHtml(info.cleanLocation)}</span>`);
+    }
+
+    const metaHtml = metaPills.length > 0 ? `<div class="tile-meta">${metaPills.join('')}</div>` : '';
+
     tile.innerHTML = `
       <div class="tile-title">${escapeHtml(e.title || 'Event')}</div>
       <div class="tile-time">${e.start.slice(11,16)}–${e.end.slice(11,16)}${showCalTag ? ` · <span class="tile-cal-badge">${escapeHtml(calName)}</span>` : ''}</div>
+      ${metaHtml}
     `;
     tile.addEventListener('click', () => {
       openEventInspector(e, false);
@@ -824,12 +968,15 @@ function createBlockTile(b, startHour, hourHeight, headerOffset = 36, colIdx = 0
     const top = ((startMins - startHour * 60) / 60) * hourHeight + headerOffset;
     const height = Math.max(22, ((endMins - startMins) / 60) * hourHeight);
 
+    const sizeClass = getTileSizeClass(height);
+
     const tile = document.createElement('div');
-    tile.className = 'cal-event-tile block';
+    tile.className = `cal-event-tile block ${sizeClass}`;
     tile.dataset.start = b.start;
     tile.dataset.end = b.end;
     tile.style.top = `${top}px`;
     tile.style.height = `${height}px`;
+    tile.style.setProperty('--tile-h', `${height}px`);
     tile.style.borderStyle = b.isProposed ? 'dashed' : 'solid';
     if (numCols > 1) {
       const wPct = 94 / numCols;
@@ -838,6 +985,7 @@ function createBlockTile(b, startHour, hourHeight, headerOffset = 36, colIdx = 0
       tile.style.right = 'auto';
       tile.style.width = `calc(${wPct}% - 2px)`;
     }
+
     tile.innerHTML = `
       <div class="tile-title">${escapeHtml(b.title)}</div>
       <div class="tile-time">${b.start.slice(11,16)}–${b.end.slice(11,16)} ${b.isProposed ? '(Draft)' : ''}</div>
@@ -874,11 +1022,17 @@ function renderTodayRail() {
       const enMs = e.end ? new Date(e.end).getTime() : 0;
       const isOngoing = !isAllDay && stMs <= nowMs && enMs > nowMs;
       const isPast = !isAllDay && enMs > 0 && enMs <= nowMs;
+      const info = extractEventRichInfo(e, false);
       item.className = `timeline-item ${isBlock ? 'block' : (isHabit ? 'habit' : 'meeting')}${isOngoing ? ' is-ongoing' : ''}${isPast ? ' is-past' : ''}`;
+      item.style.cursor = 'pointer';
       const timeLabel = isAllDay ? 'All day' : `${e.start.slice(11,16)}–${e.end.slice(11,16)}`;
       const calLabel = e.calendar ? ` <span class="tile-cal-badge">[${escapeHtml(e.calendar.trim())}]</span>` : '';
       const nowTag = isOngoing ? '<span class="now-pill-tag">NOW</span>' : '';
-      item.innerHTML = `${nowTag}<strong>${timeLabel}</strong> ${escapeHtml(e.title)}${calLabel}`;
+      const extraBadges = [
+        info.videoUrl ? `<span class="tile-cal-badge" style="color:var(--accent)">🎥 ${escapeHtml(info.videoProvider || 'Call')}</span>` : '',
+        info.cleanLocation ? `<span class="tile-cal-badge">📍 ${escapeHtml(info.cleanLocation)}</span>` : ''
+      ].filter(Boolean).join(' ');
+      item.innerHTML = `${nowTag}<strong>${timeLabel}</strong> ${escapeHtml(e.title)}${calLabel}${extraBadges ? `<div style="margin-top:2px;font-size:10px;color:var(--text-muted)">${extraBadges}</div>` : ''}`;
       item.addEventListener('click', () => openEventInspector(e, false));
       container.appendChild(item);
     });
@@ -1279,41 +1433,58 @@ function renderTaskDrawer(taskId) {
   const subsContainer = document.getElementById('drawer-subtasks');
   subsContainer.innerHTML = '';
   (t.subtasks || []).forEach(st => {
+    const isDone = st.status === 'done';
     const row = document.createElement('div');
-    row.className = `subtask-row ${st.status === 'done' ? 'done' : ''}`;
+    row.className = `subtask-row ${isDone ? 'done' : ''}`;
+    const actualBadge = isDone && st.actual_minutes ? ` · <strong style="color:var(--accent)">took ${st.actual_minutes}m</strong>` : '';
     row.innerHTML = `
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" ${st.status === 'done' ? 'checked' : ''}>
-        <span>${st.title} (${st.minutes}m)</span>
+        <input type="checkbox" ${isDone ? 'checked' : ''}>
+        <span>${escapeHtml(st.title)} (${st.minutes}m est.${actualBadge})</span>
       </label>
-      <span style="font-size:10px;color:var(--text-muted)">${st.notes || ''}</span>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:10px;color:var(--text-muted)">${escapeHtml(st.notes || '')}</span>
+        ${isDone ? `<button type="button" class="btn btn-sm btn-icon btn-edit-sub-mins" title="Edit logged duration for this subtask">✎</button>` : ''}
+      </div>
     `;
     const chk = row.querySelector('input');
+    const promptSubtaskMinutes = (onCancelRestore) => {
+      openCheckinDialog({
+        title: isDone ? 'Update Subtask Duration' : 'Complete Subtask',
+        itemName: st.title,
+        plannedMinutes: st.actual_minutes || st.minutes || 30,
+        showDate: false,
+        showNote: false,
+        onSave: async ({ minutes }) => {
+          await api(`/api/tasks/${t.id}/subtasks/${st.id}/done`, {
+            method: 'POST',
+            body: { actual_minutes: minutes, done: true }
+          });
+          loadState();
+        },
+        onCancel: () => {
+          if (onCancelRestore) onCancelRestore();
+        }
+      });
+    };
+
+    const editSubBtn = row.querySelector('.btn-edit-sub-mins');
+    if (editSubBtn) {
+      editSubBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        promptSubtaskMinutes(null);
+      });
+    }
+
     chk.addEventListener('change', async () => {
       if (chk.checked) {
-        openCheckinDialog({
-          title: 'Complete Subtask',
-          itemName: st.title,
-          plannedMinutes: st.minutes || 30,
-          showDate: false,
-          showNote: false,
-          onSave: async ({ minutes }) => {
-            await api(`/api/tasks/${t.id}/subtasks/${st.id}/done`, {
-              method: 'POST',
-              body: { actual_minutes: minutes, done: true }
-            });
-            loadState();
-          },
-          onCancel: () => {
-            chk.checked = false;
-          }
-        });
+        promptSubtaskMinutes(() => { chk.checked = false; });
       } else {
         await api(`/api/tasks/${t.id}/subtasks/${st.id}/done`, {
           method: 'POST',
           body: { done: false }
         });
-        showToast(`Reopened subtask '${st.title}'`, 'info');
+        showToast(`Reopened subtask '${st.title}' and cleared its calibration entry`, 'info');
         loadState();
       }
     });
@@ -1327,6 +1498,22 @@ function renderTaskDrawer(taskId) {
   if (blocks.length === 0) {
     blocksContainer.innerHTML = '<span style="font-size:11px;color:var(--text-dim)">No blocks placed</span>';
   } else {
+    if (blocks.length > 1 && (t.subtasks || []).length > 1) {
+      const orderBar = document.createElement('div');
+      orderBar.style.cssText = 'display:flex;justify-content:flex-end;margin-bottom:6px';
+      orderBar.innerHTML = `<button class="btn btn-sm btn-secondary btn-realign-subs" title="Ensure chronological blocks follow strict Subtask 1 → 2 → 3 order">⇅ Realign Subtask Order</button>`;
+      orderBar.querySelector('.btn-realign-subs').addEventListener('click', async () => {
+        try {
+          const res = await api(`/api/tasks/${t.id}/realign_subtasks`, { method: 'POST', body: {} });
+          const count = (res.realigned || []).length;
+          showToast(count > 0 ? `Realigned ${count} block(s) to match sequential subtask order` : 'Subtask blocks are already in sequential order', 'success');
+          loadState();
+        } catch (err) {
+          showToast('Failed to realign subtasks: ' + err.message, 'error');
+        }
+      });
+      blocksContainer.appendChild(orderBar);
+    }
     blocks.forEach(b => {
       const bRow = document.createElement('div');
       bRow.className = 'block-row';
@@ -1337,10 +1524,29 @@ function renderTaskDrawer(taskId) {
           <div class="br-time">${fmtNice(bs)} · ${fmtTime(bs)}–${fmtTime(be)}</div>
         </div>
         <div style="display:flex;gap:4px">
+          ${blocks.length > 1 ? `<button class="btn btn-sm btn-secondary btn-cascade-b" title="Push this subtask forward and cascade all following subtasks in sequential order">⇣ Cascade</button>` : ''}
           <button class="btn btn-sm btn-secondary btn-move" title="Change day / time">Reschedule</button>
           <button class="btn btn-sm btn-icon btn-del-b" title="Unschedule this block">✕</button>
         </div>
       `;
+      const btnCasc = bRow.querySelector('.btn-cascade-b');
+      if (btnCasc) {
+        btnCasc.addEventListener('click', async () => {
+          btnCasc.disabled = true;
+          try {
+            const res = await api(`/api/tasks/${t.id}/cascade_block`, {
+              method: 'POST',
+              body: { block_id: b.id }
+            });
+            showToast(res.summary || 'Pushed & cascaded subtasks in order', 'success');
+            loadState();
+          } catch (err) {
+            showToast('Cascade failed: ' + err.message, 'error');
+          } finally {
+            btnCasc.disabled = false;
+          }
+        });
+      }
       bRow.querySelector('.btn-move').addEventListener('click', () => openRescheduleDialog(t, b));
       bRow.querySelector('.btn-del-b').addEventListener('click', async () => {
         const ok = await uiConfirm('Unschedule this block from calendar?', 'Unschedule Block');
@@ -1355,6 +1561,17 @@ function renderTaskDrawer(taskId) {
       });
       blocksContainer.appendChild(bRow);
     });
+  }
+
+  // Pre-fill task recalibration input if previously calibrated
+  const fbMinsEl = document.getElementById('feedback-minutes');
+  const fbBtnEl = document.getElementById('btn-save-feedback');
+  if (fbMinsEl) {
+    fbMinsEl.value = t.logged_actual_minutes || '';
+    fbMinsEl.placeholder = t.logged_actual_minutes ? `Logged: ${t.logged_actual_minutes}m` : `Minutes (est. ${t.estimate_minutes || 60}m)`;
+  }
+  if (fbBtnEl) {
+    fbBtnEl.textContent = t.logged_actual_minutes ? `Update Recalibration (${t.logged_actual_minutes}m)` : 'Save & Recalibrate';
   }
 
   // Action button
@@ -2172,12 +2389,38 @@ async function renderMemoryView() {
       const tr = document.createElement('tr');
       const ratio = (s.actual / s.estimated).toFixed(2);
       tr.innerHTML = `
-        <td>${s.label}</td>
-        <td>${s.scope}</td>
+        <td>${escapeHtml(s.label)}</td>
+        <td>${escapeHtml(s.scope)}</td>
         <td>${s.estimated}m</td>
         <td>${s.actual}m</td>
         <td style="font-weight:600;color:${ratio > 1 ? 'var(--danger-text)' : 'var(--success-text)'}">${ratio}×</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button type="button" class="btn btn-sm btn-icon btn-edit-sample" title="Edit actual duration">✎</button>
+          <button type="button" class="btn btn-sm btn-icon btn-del-sample" title="Delete calibration sample">✕</button>
+        </td>
       `;
+      tr.querySelector('.btn-edit-sample').addEventListener('click', () => {
+        openCheckinDialog({
+          title: 'Edit Calibration Sample',
+          itemName: `${s.label} (est. ${s.estimated}m)`,
+          plannedMinutes: s.actual || s.estimated || 30,
+          showDate: false,
+          showNote: false,
+          onSave: async ({ minutes }) => {
+            await api(`/api/samples/${s.id}/update`, {
+              method: 'POST',
+              body: { actual: minutes }
+            });
+            showToast(`Updated sample '${s.label}' to ${minutes}m`, 'success');
+            loadState();
+          }
+        });
+      });
+      tr.querySelector('.btn-del-sample').addEventListener('click', async () => {
+        await api(`/api/samples/${s.id}`, { method: 'DELETE' });
+        showToast(`Deleted calibration sample '${s.label}'`, 'info');
+        loadState();
+      });
       tbody.appendChild(tr);
     });
   } catch (err) {}
@@ -2744,6 +2987,221 @@ function refreshEventInspectorTime() {
   }
 }
 
+function updateInspectorQuickLinks() {
+  const item = currentInspectedEvent;
+  if (!item) return;
+
+  const locVal = (document.getElementById('m-ev-location')?.value || '').trim();
+  const urlVal = (document.getElementById('m-ev-url')?.value || '').trim();
+  const notesVal = document.getElementById('m-ev-notes-input')?.value || '';
+
+  const tempInfo = extractEventRichInfo({
+    ...item,
+    location: locVal,
+    url: urlVal,
+    notes: notesVal
+  }, item.isProposedBlock);
+
+  const quickBar = document.getElementById('m-ev-quick-bar');
+  const btnVideo = document.getElementById('m-ev-btn-video');
+  const btnMaps = document.getElementById('m-ev-btn-maps');
+  const btnUrl = document.getElementById('m-ev-btn-url');
+  const btnOpenTask = document.getElementById('m-ev-btn-open-task');
+  const btnLogHabit = document.getElementById('m-ev-btn-log-habit');
+  const btnEditHabit = document.getElementById('m-ev-btn-edit-habit');
+  const linksContainer = document.getElementById('m-ev-detected-links');
+
+  let anyQuickAction = false;
+
+  if (btnVideo) {
+    if (tempInfo.videoUrl) {
+      btnVideo.href = tempInfo.videoUrl;
+      btnVideo.textContent = `🎥 Join ${tempInfo.videoProvider || 'Video Call'}`;
+      btnVideo.style.display = 'inline-flex';
+      anyQuickAction = true;
+    } else {
+      btnVideo.style.display = 'none';
+    }
+  }
+
+  if (btnMaps) {
+    if (tempInfo.cleanLocation) {
+      btnMaps.href = `https://maps.apple.com/?q=${encodeURIComponent(tempInfo.cleanLocation)}`;
+      btnMaps.title = `Open "${tempInfo.cleanLocation}" in Maps`;
+      btnMaps.style.display = 'inline-flex';
+      anyQuickAction = true;
+    } else {
+      btnMaps.style.display = 'none';
+    }
+  }
+
+  const nonVideoUrl = tempInfo.allUrls.find(u => u !== tempInfo.videoUrl);
+  if (btnUrl) {
+    if (nonVideoUrl) {
+      btnUrl.href = nonVideoUrl;
+      btnUrl.style.display = 'inline-flex';
+      anyQuickAction = true;
+    } else {
+      btnUrl.style.display = 'none';
+    }
+  }
+
+  if (btnOpenTask) {
+    if (tempInfo.taskId) {
+      btnOpenTask.style.display = 'inline-flex';
+      anyQuickAction = true;
+    } else {
+      btnOpenTask.style.display = 'none';
+    }
+  }
+
+  if (btnLogHabit) {
+    if (tempInfo.linkedHabit) {
+      btnLogHabit.style.display = 'inline-flex';
+      anyQuickAction = true;
+    } else {
+      btnLogHabit.style.display = 'none';
+    }
+  }
+
+  if (btnEditHabit) {
+    if (tempInfo.linkedHabit) {
+      btnEditHabit.style.display = 'inline-flex';
+      anyQuickAction = true;
+    } else {
+      btnEditHabit.style.display = 'none';
+    }
+  }
+
+  if (quickBar) {
+    quickBar.style.display = anyQuickAction ? 'flex' : 'none';
+  }
+
+  if (linksContainer) {
+    if (tempInfo.allUrls.length > 0) {
+      linksContainer.style.display = 'flex';
+      linksContainer.innerHTML = tempInfo.allUrls.map(u => {
+        const prov = detectVideoProvider(u);
+        let host = u;
+        try { host = new URL(u).hostname.replace(/^www\./, ''); } catch (e) {}
+        const label = prov ? `🎥 ${prov} (${host})` : `🔗 ${host}`;
+        return `<a class="ev-detected-link-chip" href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(u)}">${escapeHtml(label)} ↗</a>`;
+      }).join('');
+    } else {
+      linksContainer.style.display = 'none';
+      linksContainer.innerHTML = '';
+    }
+  }
+}
+
+function renderInspectorTaskCard(task) {
+  const card = document.getElementById('m-ev-task-card');
+  if (!card) return;
+  if (!task) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'flex';
+  const titleEl = document.getElementById('m-ev-task-title');
+  const metaEl = document.getElementById('m-ev-task-meta');
+  const summaryEl = document.getElementById('m-ev-task-summary');
+  const subtasksEl = document.getElementById('m-ev-task-subtasks');
+  const filesEl = document.getElementById('m-ev-task-files');
+
+  if (titleEl) titleEl.textContent = task.title || task.input_text || `Task #${task.id}`;
+  if (metaEl) {
+    const parts = [];
+    if (task.complexity) parts.push(task.complexity);
+    if (task.total_minutes) parts.push(`${task.total_minutes} min est.`);
+    if (task.deadline) parts.push(`Due ${task.deadline.replace('T', ' ').slice(0, 16)}`);
+    metaEl.textContent = parts.join(' · ');
+  }
+
+  if (summaryEl) {
+    if (task.summary && task.summary.trim()) {
+      summaryEl.style.display = 'block';
+      summaryEl.textContent = task.summary.trim();
+    } else {
+      summaryEl.style.display = 'none';
+    }
+  }
+
+  if (subtasksEl) {
+    const sts = task.subtasks || [];
+    if (sts.length > 0) {
+      subtasksEl.style.display = 'flex';
+      const doneCount = sts.filter(s => s.status === 'done' || s.done).length;
+      subtasksEl.innerHTML = `<div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:2px">Subtasks (${doneCount}/${sts.length})</div>`;
+      sts.forEach(st => {
+        const isDone = st.status === 'done' || !!st.done;
+        const row = document.createElement('label');
+        row.className = `ev-subtask-row ${isDone ? 'done' : ''}`;
+        const tookStr = isDone && st.actual_minutes ? `, took ${st.actual_minutes}m` : '';
+        row.innerHTML = `
+          <input type="checkbox" ${isDone ? 'checked' : ''}>
+          <span>${escapeHtml(st.title)}${st.minutes ? ` <small style="color:var(--text-dim)">(${st.minutes}m${tookStr})</small>` : ''}</span>
+        `;
+        const cb = row.querySelector('input');
+        cb.addEventListener('change', async () => {
+          if (cb.checked) {
+            openCheckinDialog({
+              title: 'Complete Subtask',
+              itemName: st.title,
+              plannedMinutes: st.actual_minutes || st.minutes || 30,
+              showDate: false,
+              showNote: false,
+              onSave: async ({ minutes }) => {
+                await api(`/api/tasks/${task.id}/subtasks/${st.id}/done`, {
+                  method: 'POST',
+                  body: { actual_minutes: minutes, done: true }
+                });
+                st.status = 'done';
+                st.actual_minutes = minutes;
+                row.classList.add('done');
+                loadState();
+              },
+              onCancel: () => {
+                cb.checked = false;
+              }
+            });
+          } else {
+            try {
+              await api(`/api/tasks/${task.id}/subtasks/${st.id}/done`, {
+                method: 'POST',
+                body: { done: false }
+              });
+              st.status = 'todo';
+              st.actual_minutes = null;
+              row.classList.remove('done');
+              loadState();
+            } catch (err) {
+              showToast('Failed to update subtask: ' + err.message, 'error');
+            }
+          }
+        });
+        subtasksEl.appendChild(row);
+      });
+    } else {
+      subtasksEl.style.display = 'none';
+      subtasksEl.innerHTML = '';
+    }
+  }
+
+  if (filesEl) {
+    const files = task.files_used || [];
+    if (files.length > 0) {
+      filesEl.style.display = 'flex';
+      filesEl.innerHTML = files.map(f => {
+        const shortName = String(f).split('/').slice(-2).join('/');
+        return `<span class="ev-file-chip" title="${escapeHtml(String(f))}">📄 ${escapeHtml(shortName)}</span>`;
+      }).join('');
+    } else {
+      filesEl.style.display = 'none';
+      filesEl.innerHTML = '';
+    }
+  }
+}
+
 function initEventInspector() {
   const modal = document.getElementById('modal-event');
   const btnClose = document.getElementById('modal-event-close');
@@ -2752,7 +3210,11 @@ function initEventInspector() {
   const btnDelete = document.getElementById('m-ev-btn-delete');
   const btnDeleteSeries = document.getElementById('m-ev-btn-delete-series');
   const btnOpenTask = document.getElementById('m-ev-btn-open-task');
+  const btnLogHabit = document.getElementById('m-ev-btn-log-habit');
+  const btnEditHabit = document.getElementById('m-ev-btn-edit-habit');
   const btnResched = document.getElementById('m-ev-btn-resched');
+  const btnCascade = document.getElementById('m-ev-btn-cascade');
+  const btnSwap = document.getElementById('m-ev-btn-swap');
 
   if (!modal) return;
 
@@ -2771,6 +3233,14 @@ function initEventInspector() {
     if (el) {
       el.addEventListener('input', refreshEventInspectorTime);
       el.addEventListener('change', refreshEventInspectorTime);
+    }
+  });
+
+  ['m-ev-location', 'm-ev-url', 'm-ev-notes-input'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('input', updateInspectorQuickLinks);
+      el.addEventListener('change', updateInspectorQuickLinks);
     }
   });
 
@@ -2810,16 +3280,72 @@ function initEventInspector() {
     });
   }
 
+  if (btnCascade) {
+    btnCascade.addEventListener('click', async () => {
+      if (!currentInspectedEvent || !currentInspectedEvent.task_id) return;
+      const item = currentInspectedEvent;
+      btnCascade.disabled = true;
+      try {
+        const res = await api(`/api/tasks/${item.task_id}/cascade_block`, {
+          method: 'POST',
+          body: {
+            block_id: item.block_id || item.id
+          }
+        });
+        showToast(res.summary || 'Pushed & cascaded subtasks in sequential order', 'success');
+        closeModal();
+        loadState();
+      } catch (e) {
+        showToast('Failed to cascade subtasks: ' + e.message, 'error');
+      } finally {
+        btnCascade.disabled = false;
+      }
+    });
+  }
+
+  if (btnSwap) {
+    btnSwap.addEventListener('click', async () => {
+      if (!currentInspectedEvent || !currentInspectedEvent.block_id) return;
+      const selectEl = document.getElementById('m-ev-swap-select');
+      const otherBid = selectEl ? parseInt(selectEl.value, 10) : 0;
+      if (!otherBid) return showToast('Select a block to swap with', 'warning');
+      btnSwap.disabled = true;
+      try {
+        const res = await api('/api/calendar/blocks/swap', {
+          method: 'POST',
+          body: {
+            block_a_id: currentInspectedEvent.block_id,
+            block_b_id: otherBid
+          }
+        });
+        showToast(res.summary || 'Swapped calendar slots', 'success');
+        closeModal();
+        loadState();
+      } catch (e) {
+        showToast('Failed to swap slots: ' + e.message, 'error');
+      } finally {
+        btnSwap.disabled = false;
+      }
+    });
+  }
+
   btnSave.addEventListener('click', async () => {
     if (!currentInspectedEvent) return;
     const item = currentInspectedEvent;
     const newTitle = document.getElementById('m-ev-title').value.trim();
     if (!newTitle) return showToast('Title cannot be empty', 'warning');
 
+    const newLoc = (document.getElementById('m-ev-location')?.value || '').trim();
+    const newUrl = (document.getElementById('m-ev-url')?.value || '').trim();
+    const userNotes = (document.getElementById('m-ev-notes-input')?.value || '').trim();
+    const internalTags = item._internalTags || [];
+    const combinedNotes = [userNotes, ...internalTags].filter(Boolean).join('\n');
+
     const sel = !item.all_day ? getInspectorSelection() : null;
 
     btnSave.disabled = true;
     try {
+      let realignedCount = 0;
       if (item.isProposedBlock) {
         if (newTitle !== (item.title || '')) {
           await api(`/api/tasks/${item.task_id}/rename`, {
@@ -2828,13 +3354,16 @@ function initEventInspector() {
           });
         }
         if (sel) {
-          await api(`/api/tasks/${item.task_id}/move_block`, {
+          const mvRes = await api(`/api/tasks/${item.task_id}/move_block`, {
             method: 'POST',
             body: { block_id: item.block_id || item.id, new_start: sel.startIso, new_end: sel.endIso }
           });
+          if (mvRes && mvRes.block && Array.isArray(mvRes.block.realigned)) {
+            realignedCount = mvRes.block.realigned.length;
+          }
         }
       } else {
-        await api('/api/calendar/events/update', {
+        const upRes = await api('/api/calendar/events/update', {
           method: 'POST',
           body: {
             event_id: item.id,
@@ -2845,12 +3374,22 @@ function initEventInspector() {
             title: newTitle,
             new_start: sel ? sel.startIso : undefined,
             new_end: sel ? sel.endIso : undefined,
+            location: newLoc,
+            url: newUrl,
+            notes: combinedNotes,
             occurrence: item.occurrence,
             span: 'this'
           }
         });
+        if (upRes && Array.isArray(upRes.realigned)) {
+          realignedCount = upRes.realigned.length;
+        }
       }
-      showToast('Event updated', 'success');
+      if (realignedCount > 0) {
+        showToast(`Event updated · Realigned ${realignedCount} subtask(s) to preserve sequential order`, 'success');
+      } else {
+        showToast('Event updated', 'success');
+      }
       closeModal();
       loadState();
     } catch (e) {
@@ -2929,47 +3468,98 @@ function initEventInspector() {
     }
   });
 
-  btnOpenTask.addEventListener('click', () => {
-    if (currentInspectedEvent && currentInspectedEvent.task_id) {
-      const tid = currentInspectedEvent.task_id;
+  if (btnOpenTask) {
+    btnOpenTask.addEventListener('click', () => {
+      if (currentInspectedEvent && currentInspectedEvent.task_id) {
+        const tid = currentInspectedEvent.task_id;
+        closeModal();
+        const tabBtn = document.querySelector('.nav-tab[data-tab="tasks"]');
+        if (tabBtn) tabBtn.click();
+        openTaskDrawer(tid);
+      }
+    });
+  }
+
+  if (btnLogHabit) {
+    btnLogHabit.addEventListener('click', () => {
+      const h = currentInspectedEvent && currentInspectedEvent._linkedHabit;
+      if (!h) return;
+      const evDate = (currentInspectedEvent.start || '').slice(0, 10) || fmtDate(new Date());
       closeModal();
-      const tabBtn = document.querySelector('.nav-tab[data-tab="tasks"]');
-      if (tabBtn) tabBtn.click();
-      openTaskDrawer(tid);
-    }
-  });
+      openCheckinDialog({
+        title: 'Habit Check-in',
+        itemName: h.name,
+        plannedMinutes: h.minutes || 45,
+        defaultDate: evDate,
+        showDate: true,
+        showNote: true,
+        onSave: async ({ minutes, date, note }) => {
+          try {
+            await api(`/api/habits/${h.id}/checkin`, {
+              method: 'POST',
+              body: { status: 'done', actual_minutes: minutes, date, note }
+            });
+            showToast(`Habit '${h.name}' check-in saved`, 'success');
+            loadState();
+          } catch (e) {
+            showToast('Check-in failed: ' + e.message, 'error');
+          }
+        }
+      });
+    });
+  }
+
+  if (btnEditHabit) {
+    btnEditHabit.addEventListener('click', () => {
+      const h = currentInspectedEvent && currentInspectedEvent._linkedHabit;
+      if (!h) return;
+      closeModal();
+      openHabitModal(h);
+    });
+  }
 }
 
 function openEventInspector(item, isBlock = false) {
-  const enriched = { ...item, isProposedBlock: isBlock };
-  const notes = enriched.notes || '';
-
-  // Resolve block_id, task_id, and habit_id from notes or state
-  if (!isBlock) {
-    const mBlock = notes.match(/planner:block=(\d+)/);
-    if (mBlock) enriched.block_id = parseInt(mBlock[1], 10);
-    const mTask = notes.match(/Planner Task #(\d+)/i) || notes.match(/planner:task=(\d+)/);
-    if (mTask) enriched.task_id = parseInt(mTask[1], 10);
-    const mHabit = notes.match(/planner:habit=(\d+)/);
-    if (mHabit) enriched.habit_id = parseInt(mHabit[1], 10);
-
-    if (enriched.block_id && !enriched.task_id) {
-      (S.tasks || []).forEach(t => {
-        if ((t.blocks || []).some(b => b.id === enriched.block_id)) {
-          enriched.task_id = t.id;
-        }
-      });
-    }
-  } else {
-    enriched.block_id = item.id;
-    enriched.task_id = item.task_id || (item.task && item.task.id);
-  }
+  const info = extractEventRichInfo(item, isBlock);
+  const enriched = {
+    ...item,
+    isProposedBlock: isBlock,
+    block_id: info.blockId,
+    task_id: info.taskId,
+    habit_id: info.habitId,
+    _linkedTask: info.linkedTask,
+    _linkedHabit: info.linkedHabit,
+    _internalTags: info.internalTags
+  };
 
   currentInspectedEvent = enriched;
   const modal = document.getElementById('modal-event');
   if (!modal) return;
 
   const isWritable = enriched.writable !== false;
+
+  // Header badge & title
+  const typeBadge = document.getElementById('m-ev-type-badge');
+  const headerTitle = document.getElementById('m-ev-calendar-title');
+  if (typeBadge) {
+    if (enriched.task_id || isBlock) {
+      typeBadge.textContent = isBlock && item.isProposed ? 'Draft Block' : 'Task Block';
+      typeBadge.className = 'ev-type-pill block';
+    } else if (enriched.habit_id || (enriched.calendar || '').toLowerCase().includes('habits')) {
+      typeBadge.textContent = 'Habit';
+      typeBadge.className = 'ev-type-pill habit';
+    } else if (enriched.all_day) {
+      typeBadge.textContent = 'All-Day';
+      typeBadge.className = 'ev-type-pill meeting';
+    } else {
+      typeBadge.textContent = 'Event';
+      typeBadge.className = 'ev-type-pill meeting';
+    }
+  }
+  if (headerTitle) {
+    headerTitle.textContent = enriched.title || 'Calendar Event Details';
+  }
+
   const titleInput = document.getElementById('m-ev-title');
   titleInput.value = enriched.title || '';
   titleInput.disabled = !isWritable;
@@ -2977,6 +3567,35 @@ function openEventInspector(item, isBlock = false) {
   const srcBadge = enriched.source ? ` (${enriched.source})` : '';
   const roBadge = !isWritable ? ' [Read-only]' : '';
   document.getElementById('m-ev-cal-name').textContent = (enriched.calendar || (isBlock ? 'Planned Block' : 'Calendar')) + srcBadge + roBadge;
+
+  // Recurrence & Attendees metadata
+  const recInfoEl = document.getElementById('m-ev-recurrence-info');
+  if (recInfoEl) {
+    if (enriched.recurring) {
+      const rule = enriched.rule || {};
+      const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const daysStr = (rule.days || []).map(d => dayNames[d] || '').filter(Boolean).join(', ');
+      recInfoEl.textContent = `↻ Recurring${rule.freq ? ` (${rule.freq}${daysStr ? ': ' + daysStr : ''})` : ''}`;
+    } else {
+      recInfoEl.textContent = '';
+    }
+  }
+
+  const attEl = document.getElementById('m-ev-attendees-info');
+  if (attEl) {
+    const parts = [];
+    if (enriched.organizer) parts.push(`<strong>Organizer:</strong> ${escapeHtml(enriched.organizer)}`);
+    if (Array.isArray(enriched.attendees) && enriched.attendees.length > 0) {
+      parts.push(`<strong>Participants:</strong> ${enriched.attendees.slice(0, 8).map(escapeHtml).join(', ')}${enriched.attendees.length > 8 ? ` +${enriched.attendees.length - 8} more` : ''}`);
+    }
+    if (parts.length > 0) {
+      attEl.style.display = 'block';
+      attEl.innerHTML = parts.join(' · ');
+    } else {
+      attEl.style.display = 'none';
+      attEl.innerHTML = '';
+    }
+  }
 
   const timeControls = document.getElementById('m-ev-time-controls');
   const dateEl = document.getElementById('m-ev-date');
@@ -3000,20 +3619,45 @@ function openEventInspector(item, isBlock = false) {
   }
   refreshEventInspectorTime();
 
+  // Populate Location, URL, and Notes fields
+  const locInput = document.getElementById('m-ev-location');
+  const urlInput = document.getElementById('m-ev-url');
+  const notesInput = document.getElementById('m-ev-notes-input');
+  const detailsGrid = document.getElementById('m-ev-details-grid');
   const notesGroup = document.getElementById('m-ev-notes-group');
-  const notesEl = document.getElementById('m-ev-notes');
-  if (notes.trim()) {
-    notesGroup.style.display = 'block';
-    notesEl.textContent = notes;
-  } else {
-    notesGroup.style.display = 'none';
+
+  if (locInput) {
+    locInput.value = info.cleanLocation || '';
+    locInput.disabled = !isWritable || isBlock;
   }
+  if (urlInput) {
+    urlInput.value = info.rawUrl || info.videoUrl || '';
+    urlInput.disabled = !isWritable || isBlock;
+  }
+  if (detailsGrid) {
+    detailsGrid.style.display = isBlock ? 'none' : 'grid';
+  }
+  if (notesInput) {
+    notesInput.value = info.cleanNotes || '';
+    notesInput.disabled = !isWritable || isBlock;
+  }
+  if (notesGroup) {
+    notesGroup.style.display = (isBlock && !info.cleanNotes) ? 'none' : 'block';
+  }
+
+  // Update quick links (Video Call, Maps, URL, Task/Habit buttons, Detected Links)
+  updateInspectorQuickLinks();
+
+  // Populate Linked Task Card (Summary, Subtasks, Grounded Files)
+  renderInspectorTaskCard(info.linkedTask);
 
   const btnDelete = document.getElementById('m-ev-btn-delete');
   const seriesBtn = document.getElementById('m-ev-btn-delete-series');
   const btnSave = document.getElementById('m-ev-btn-save');
   const btnResched = document.getElementById('m-ev-btn-resched');
-  const btnOpenTask = document.getElementById('m-ev-btn-open-task');
+  const btnCascade = document.getElementById('m-ev-btn-cascade');
+  const swapGroup = document.getElementById('m-ev-swap-group');
+  const swapSelect = document.getElementById('m-ev-swap-select');
 
   btnDelete.disabled = !isWritable;
   btnDelete.textContent = enriched.recurring ? '✕ Delete Occurrence' : '✕ Delete Event';
@@ -3029,8 +3673,50 @@ function openEventInspector(item, isBlock = false) {
     btnResched.style.display = (isWritable && !enriched.all_day) ? 'inline-flex' : 'none';
   }
 
-  if (btnOpenTask) {
-    btnOpenTask.style.display = enriched.task_id ? 'inline-flex' : 'none';
+  if (btnCascade) {
+    const taskBlocksCount = (info.linkedTask && Array.isArray(info.linkedTask.blocks)) ? info.linkedTask.blocks.length : 0;
+    const taskSubsCount = (info.linkedTask && Array.isArray(info.linkedTask.subtasks)) ? info.linkedTask.subtasks.length : 0;
+    btnCascade.style.display = (isWritable && enriched.task_id && (taskBlocksCount > 1 || taskSubsCount > 1)) ? 'inline-flex' : 'none';
+  }
+
+  // Populate Swap Slot selector if this is a Task Block
+  if (swapGroup && swapSelect) {
+    if (isWritable && enriched.block_id) {
+      const otherTaskOpts = [];
+      const sameTaskOpts = [];
+      (S.tasks || []).forEach(t => {
+        if (t.status === 'done') return;
+        (t.blocks || []).forEach(b => {
+          if (b.id === enriched.block_id || !b.start || !b.end) return;
+          const st = new Date(b.start);
+          const label = `${fmtNice(st)} ${b.start.slice(11, 16)}–${b.end.slice(11, 16)} · ${b.title || t.title}`;
+          const optHtml = `<option value="${b.id}">${escapeHtml(label)}</option>`;
+          if (t.id === enriched.task_id) {
+            sameTaskOpts.push({ start: b.start, html: optHtml });
+          } else {
+            otherTaskOpts.push({ start: b.start, html: optHtml });
+          }
+        });
+      });
+      otherTaskOpts.sort((a, b) => a.start.localeCompare(b.start));
+      sameTaskOpts.sort((a, b) => a.start.localeCompare(b.start));
+
+      const groups = [];
+      if (otherTaskOpts.length > 0) {
+        groups.push(`<optgroup label="Other Tasks' Blocks">${otherTaskOpts.map(o => o.html).join('')}</optgroup>`);
+      }
+      if (sameTaskOpts.length > 0) {
+        groups.push(`<optgroup label="Other Blocks of This Task">${sameTaskOpts.map(o => o.html).join('')}</optgroup>`);
+      }
+      if (groups.length > 0) {
+        swapSelect.innerHTML = groups.join('');
+        swapGroup.style.display = 'block';
+      } else {
+        swapGroup.style.display = 'none';
+      }
+    } else {
+      swapGroup.style.display = 'none';
+    }
   }
 
   modal.style.display = 'flex';

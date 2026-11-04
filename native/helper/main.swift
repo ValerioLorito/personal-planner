@@ -149,6 +149,11 @@ func describeRule(_ rule: EKRecurrenceRule) -> [String: Any] {
 }
 
 func serialize(_ e: EKEvent) -> [String: Any] {
+    let attendeesList = (e.attendees ?? []).compactMap { p -> String? in
+        if let name = p.name, !name.isEmpty { return name }
+        let u = p.url.absoluteString.replacingOccurrences(of: "mailto:", with: "")
+        return u.isEmpty ? nil : u
+    }
     var d: [String: Any] = [
         "id": e.eventIdentifier ?? "",
         "item_id": e.calendarItemIdentifier,
@@ -161,7 +166,10 @@ func serialize(_ e: EKEvent) -> [String: Any] {
         "end": fmt(e.endDate),
         "all_day": e.isAllDay,
         "location": e.location ?? "",
+        "url": e.url?.absoluteString ?? "",
         "notes": String((e.notes ?? "").prefix(4000)),
+        "organizer": e.organizer?.name ?? "",
+        "attendees": attendeesList,
         "recurring": e.hasRecurrenceRules,
         "detached": e.isDetached,
         "occurrence": fmt(e.occurrenceDate),
@@ -336,6 +344,10 @@ func cmdCreate() {
     e.isAllDay = req["all_day"] as? Bool ?? false
     if let n = req["notes"] as? String { e.notes = n }
     if let l = req["location"] as? String { e.location = l }
+    if let u = req["url"] as? String {
+        let trimmed = u.trimmingCharacters(in: .whitespacesAndNewlines)
+        e.url = trimmed.isEmpty ? nil : URL(string: trimmed)
+    }
     if let rec = req["recurrence"] as? [String: Any], let rule = buildRule(rec) {
         e.addRecurrenceRule(rule)
     }
@@ -359,6 +371,10 @@ func cmdUpdate() {
     if let en = parseDate(req["end"]) { e.endDate = en }
     if let n = req["notes"] as? String { e.notes = n }
     if let l = req["location"] as? String { e.location = l }
+    if let u = req["url"] as? String {
+        let trimmed = u.trimmingCharacters(in: .whitespacesAndNewlines)
+        e.url = trimmed.isEmpty ? nil : URL(string: trimmed)
+    }
     if let calName = req["calendar"] as? String {
         guard let cal = findCalendar(calName) else { fail("calendar not found: \(calName)", code: 4) }
         e.calendar = cal

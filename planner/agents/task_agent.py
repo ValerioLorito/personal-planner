@@ -27,9 +27,10 @@ If the user asks to move, reschedule, change the date/time/deadline, rename, or 
   "reply": "<concise confirmation of what was changed, including new dates/times>",
   "edits": [
     {
-      "action": "move_block" | "reschedule_task" | "update_deadline" | "rename_task" | "delete_task" | "remove_block" | "add_block",
+      "action": "move_block" | "swap_blocks" | "cascade_subtasks" | "realign_subtasks" | "reschedule_task" | "update_deadline" | "rename_task" | "delete_task" | "remove_block" | "add_block",
       "task_id": <int>,
       "block_id": <int or null>,
+      "other_block_id": <int or null>,
       "new_start": "YYYY-MM-DDTHH:MM" or null,
       "new_end": "YYYY-MM-DDTHH:MM" or null,
       "deadline": "YYYY-MM-DDTHH:MM" or null,
@@ -40,8 +41,11 @@ If the user asks to move, reschedule, change the date/time/deadline, rename, or 
   ]
 }
 Rules for MODE A:
-- Use "move_block" when moving a specific block (or a single-block task) to a specific date/time. If the user only states the new start time (e.g. "move Quiz 3 to Friday at 15:00"), preserve the block's duration to compute "new_end". If moving multiple blocks to specific times, include one "move_block" entry per block_id.
-- Use "reschedule_task" when the user wants the scheduler to re-place a task's blocks automatically under new constraints (e.g. "reschedule Assignment 1 to start Thursday afternoon" -> set "earliest" and "preferred_time").
+- Use "move_block" when moving a specific block (or a single-block task) to a specific date/time. Note: moving a block of a multi-subtask task automatically realigns the task's subtask sequence (1 -> 2 -> 3 -> 4) in chronological order!
+- Use "cascade_subtasks" when a subtask overran its slot (e.g. "Subtask 1 took the whole morning, push Subtask 2 and cascade the remaining subtasks in order"): set "task_id" and "block_id" (the block to push forward, plus optionally "new_start"/"earliest" if a specific restart time is requested). This pushes that block and cascades all subsequent subtasks forward in strict sequential order.
+- Use "swap_blocks" when the user wants to switch/swap the time slots of two scheduled blocks in the calendar (either between two different tasks or within the same task): set "block_id" and "other_block_id".
+- Use "realign_subtasks" when the user asks to fix or reorder a task's blocks so that subtasks follow their strict sequential order (1, 2, 3...) chronologically: set "task_id".
+- Use "reschedule_task" when the user wants the scheduler to re-place all of a task's blocks automatically under new constraints (e.g. "reschedule Assignment 1 to start Thursday afternoon" -> set "earliest" and "preferred_time").
 - Use "update_deadline" to change a task's deadline, "rename_task" to rename it, "remove_block" to delete one block, "add_block" to add a new block at new_start..new_end, or "delete_task" to delete the task.
 
 === MODE B: PLAN A NEW TASK ===
@@ -150,10 +154,15 @@ def build_context(app, task: dict) -> str:
             parts.append("- Task #%d [%s] \"%s\" — %d min, deadline %s (%s)" % (
                 r["id"], r["category"], r["title"] or r.get("input_text") or "(untitled)",
                 r["estimate_minutes"] or 0, r["deadline"] or "none", r["status"]))
-            b_rows = app.db.q("SELECT id, title, start, end, status FROM blocks WHERE task_id=? ORDER BY start", (r["id"],))
+            b_rows = app.db.q(
+                "SELECT b.id, b.title, b.start, b.end, b.status, b.subtask_id, s.idx AS sub_idx "
+                "FROM blocks b LEFT JOIN subtasks s ON b.subtask_id = s.id "
+                "WHERE b.task_id=? ORDER BY b.start", (r["id"],)
+            )
             for b in b_rows:
-                parts.append("    * Block #%d: %s to %s \"%s\" (%s)" % (
-                    b["id"], b["start"], b["end"], b["title"], b["status"]))
+                sub_tag = (" [Subtask #%d]" % (int(b["sub_idx"]) + 1)) if b.get("sub_idx") is not None else ""
+                parts.append("    * Block #%d%s: %s to %s \"%s\" (%s)" % (
+                    b["id"], sub_tag, b["start"], b["end"], b["title"], b["status"]))
     else:
         parts.append("(none)")
 

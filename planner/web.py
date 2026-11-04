@@ -141,13 +141,49 @@ class PlannerHandler(SimpleHTTPRequestHandler):
                 res = tasks_mgr.move_block(self.app, bid, body["new_start"], body["new_end"])
                 return self._send_json({"ok": True, "block": res})
 
-            m = re.match(r"^/api/tasks/(\d+)/subtasks/(\d+)/done$", path)
+            m = re.match(r"^/api/tasks/(\d+)/cascade_block$", path)
+            if m:
+                tid = int(m.group(1))
+                bid = int(body["block_id"]) if body.get("block_id") else None
+                res = tasks_mgr.cascade_task_from_block(
+                    self.app,
+                    task_id=tid,
+                    block_id=bid,
+                    earliest_start=body.get("earliest_start")
+                )
+                return self._send_json(res)
+
+            m = re.match(r"^/api/tasks/(\d+)/realign_subtasks$", path)
+            if m:
+                tid = int(m.group(1))
+                realigned = tasks_mgr.realign_task_subtask_order(self.app, tid)
+                self.app.notify("tasks_changed", {"action": "realigned", "id": tid})
+                self.app.notify("events_changed", {"action": "realigned", "id": tid})
+                return self._send_json({"ok": True, "realigned": realigned, "task": tasks_mgr.get_task_full(self.app, tid)})
+
+            if path == "/api/calendar/blocks/swap":
+                ba = int(body["block_a_id"])
+                bb = int(body["block_b_id"])
+                res = tasks_mgr.swap_blocks(self.app, ba, bb)
+                return self._send_json(res)
+
+            m = re.match(r"^/api/tasks/(\d+)/subtasks/(\d+)/(done|toggle)$", path)
             if m:
                 sid = int(m.group(2))
                 mins = int(body.get("actual_minutes", 0)) if body.get("actual_minutes") else None
                 done_flag = body.get("done", True) is not False
                 res = tasks_mgr.complete_subtask(self.app, sid, mins, done=done_flag)
                 return self._send_json({"ok": True, "task": res})
+
+            m = re.match(r"^/api/samples/(\d+)/update$", path)
+            if m:
+                sid = int(m.group(1))
+                actual = int(body.get("actual", 0))
+                est = int(body["estimated"]) if body.get("estimated") else None
+                res = memory.update_sample(self.app.db, sid, actual, estimated=est)
+                self.app.notify("state_changed", {"action": "sample_updated", "id": sid})
+                self.app.notify("tasks_changed", {"action": "sample_updated", "id": sid})
+                return self._send_json({"ok": True, "sample": res})
 
             m = re.match(r"^/api/tasks/(\d+)/feedback$", path)
             if m:
@@ -297,6 +333,13 @@ class PlannerHandler(SimpleHTTPRequestHandler):
                 ext_id = body.get("ext_id")
                 if not eid or not new_title:
                     return self._send_error(400, "event_id and title are required")
+                extra_fields = {}
+                if "location" in body and body["location"] is not None:
+                    extra_fields["location"] = str(body["location"]).strip()
+                if "notes" in body and body["notes"] is not None:
+                    extra_fields["notes"] = str(body["notes"])
+                if "url" in body and body["url"] is not None:
+                    extra_fields["url"] = str(body["url"]).strip()
                 ev = self.app.cal.update(
                     eid,
                     occurrence=occ,
@@ -305,23 +348,35 @@ class PlannerHandler(SimpleHTTPRequestHandler):
                     ext_id=ext_id,
                     title=new_title,
                     start=new_start,
-                    end=new_end
+                    end=new_end,
+                    **extra_fields
                 )
                 self.app.db.x("UPDATE blocks SET title=? WHERE event_id=?", (new_title, eid))
+                affected_task_id = None
                 if body.get("block_id"):
-                    self.app.db.x("UPDATE blocks SET title=? WHERE id=?", (new_title, int(body["block_id"])))
+                    bid_int = int(body["block_id"])
+                    self.app.db.x("UPDATE blocks SET title=? WHERE id=?", (new_title, bid_int))
                     if new_start and new_end:
                         self.app.db.x("UPDATE blocks SET start=?, end=?, pinned=1 WHERE id=?",
-                                      (new_start[:16], new_end[:16], int(body["block_id"])))
+                                      (new_start[:16], new_end[:16], bid_int))
+                    b_row = self.app.db.one("SELECT task_id FROM blocks WHERE id=?", (bid_int,))
+                    if b_row:
+                        affected_task_id = b_row["task_id"]
                 elif new_start and new_end:
                     self.app.db.x("UPDATE blocks SET start=?, end=?, pinned=1 WHERE event_id=?",
                                   (new_start[:16], new_end[:16], eid))
+                    b_row = self.app.db.one("SELECT task_id FROM blocks WHERE event_id=?", (eid,))
+                    if b_row:
+                        affected_task_id = b_row["task_id"]
+                realigned = []
+                if affected_task_id and new_start and new_end:
+                    realigned = tasks_mgr.realign_task_subtask_order(self.app, affected_task_id)
                 self.app.db.x("UPDATE habits SET name=? WHERE series_id=?", (new_title, eid))
                 if body.get("habit_id"):
                     self.app.db.x("UPDATE habits SET name=? WHERE id=?", (new_title, int(body["habit_id"])))
-                self.app.notify("events_changed", {"action": "updated", "id": eid})
-                self.app.notify("tasks_changed", {"action": "event_updated", "id": eid})
-                return self._send_json({"ok": True, "event": ev})
+                self.app.notify("events_changed", {"action": "updated", "id": eid, "realigned": len(realigned)})
+                self.app.notify("tasks_changed", {"action": "event_updated", "id": eid, "realigned": len(realigned)})
+                return self._send_json({"ok": True, "event": ev, "realigned": realigned})
 
             if path == "/api/calendar/events/move":
                 if body.get("block_id"):
@@ -577,6 +632,13 @@ class PlannerHandler(SimpleHTTPRequestHandler):
             if m:
                 bid = int(m.group(1))
                 memory.forget(self.app.db, bid)
+                return self._send_json({"ok": True})
+
+            m = re.match(r"^/api/samples/(\d+)$", path)
+            if m:
+                sid = int(m.group(1))
+                memory.delete_sample(self.app.db, sid)
+                self.app.notify("state_changed", {"action": "sample_deleted", "id": sid})
                 return self._send_json({"ok": True})
 
             m = re.match(r"^/api/calendar/events/(.+)$", path)
