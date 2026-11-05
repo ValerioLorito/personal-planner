@@ -142,14 +142,15 @@ class PlannerHandler(SimpleHTTPRequestHandler):
                 return self._send_json({"ok": True, "block": res})
 
             m = re.match(r"^/api/tasks/(\d+)/cascade_block$", path)
-            if m:
-                tid = int(m.group(1))
-                bid = int(body["block_id"]) if body.get("block_id") else None
+            if m or path == "/api/calendar/blocks/cascade":
+                tid = int(m.group(1)) if m else (int(body["task_id"]) if body.get("task_id") else None)
+                bid = body.get("block_id")
                 res = tasks_mgr.cascade_task_from_block(
                     self.app,
                     task_id=tid,
                     block_id=bid,
-                    earliest_start=body.get("earliest_start")
+                    earliest_start=body.get("earliest_start"),
+                    event_id=body.get("event_id")
                 )
                 return self._send_json(res)
 
@@ -161,9 +162,10 @@ class PlannerHandler(SimpleHTTPRequestHandler):
                 self.app.notify("events_changed", {"action": "realigned", "id": tid})
                 return self._send_json({"ok": True, "realigned": realigned, "task": tasks_mgr.get_task_full(self.app, tid)})
 
-            if path == "/api/calendar/blocks/swap":
-                ba = int(body["block_a_id"])
-                bb = int(body["block_b_id"])
+            m_swap = re.match(r"^/api/tasks/(\d+)/swap_blocks$", path)
+            if path == "/api/calendar/blocks/swap" or m_swap:
+                ba = body.get("block_a_id")
+                bb = body.get("block_b_id")
                 res = tasks_mgr.swap_blocks(self.app, ba, bb)
                 return self._send_json(res)
 
@@ -184,6 +186,21 @@ class PlannerHandler(SimpleHTTPRequestHandler):
                 self.app.notify("state_changed", {"action": "sample_updated", "id": sid})
                 self.app.notify("tasks_changed", {"action": "sample_updated", "id": sid})
                 return self._send_json({"ok": True, "sample": res})
+
+            m = re.match(r"^/api/samples/(\d+)/delete$", path)
+            if m:
+                sid = int(m.group(1))
+                memory.delete_sample(self.app.db, sid)
+                self.app.notify("state_changed", {"action": "sample_deleted", "id": sid})
+                self.app.notify("tasks_changed", {"action": "sample_deleted", "id": sid})
+                return self._send_json({"ok": True})
+
+            m = re.match(r"^/api/beliefs/(\d+)/delete$", path)
+            if m:
+                bid = int(m.group(1))
+                memory.forget(self.app.db, bid)
+                self.app.notify("state_changed", {"action": "belief_deleted", "id": bid})
+                return self._send_json({"ok": True})
 
             m = re.match(r"^/api/tasks/(\d+)/feedback$", path)
             if m:
@@ -802,6 +819,38 @@ class PlannerHandler(SimpleHTTPRequestHandler):
             self.app.bus.unsubscribe(sub)
 
 
+def _start_code_reloader(port: int):
+    import sys
+    import threading
+    import time
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def _collect_mtimes():
+        mtimes = {}
+        for root, _, files in os.walk(pkg_dir):
+            for fname in files:
+                if fname.endswith(".py"):
+                    full = os.path.join(root, fname)
+                    try:
+                        mtimes[full] = os.path.getmtime(full)
+                    except OSError:
+                        pass
+        return mtimes
+
+    initial = _collect_mtimes()
+
+    def _watch():
+        while True:
+            time.sleep(2.0)
+            current = _collect_mtimes()
+            if current != initial:
+                print("[Planner] Python source change detected; hot-restarting server...", flush=True)
+                os.execv(sys.executable, [sys.executable, "-m", "planner.cli", "web", "--port", str(port)])
+
+    t = threading.Thread(target=_watch, daemon=True)
+    t.start()
+
+
 def serve(port: int = 8765, app: App = None):
     if app is None:
         app = App()
@@ -809,11 +858,12 @@ def serve(port: int = 8765, app: App = None):
     from .watcher import CalendarWatcher
     app.watcher = CalendarWatcher(app)
     app.watcher.start()
+    _start_code_reloader(port)
 
     server_address = ("127.0.0.1", port)
     httpd = ThreadingHTTPServer(server_address, PlannerHandler)
     httpd.app = app
-    print(f"Planner listening on http://127.0.0.1:{port}")
+    print(f"Planner listening on http://127.0.0.1:{port}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -92,6 +92,19 @@ def update_sample(db, sample_id: int, actual: int, estimated: int = None) -> dic
 
 
 def delete_sample(db, sample_id: int) -> None:
+    row = db.one("SELECT * FROM samples WHERE id=?", (int(sample_id),))
+    if row:
+        ref = (row.get("ref") or "").strip()
+        if ref.startswith("subtask:"):
+            try:
+                sid = int(ref.split(":", 1)[1])
+                db.update("subtasks", sid, {"actual_minutes": None})
+            except Exception:
+                pass
+        if ref:
+            db.x("DELETE FROM samples WHERE id=? OR (kind=? AND ref=?)",
+                 (int(sample_id), row.get("kind") or "task", ref))
+            return
     db.x("DELETE FROM samples WHERE id=?", (int(sample_id),))
 
 

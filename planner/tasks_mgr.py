@@ -418,6 +418,79 @@ def schedule_task(app, task_id: int) -> dict:
     return get_task_full(app, task_id)
 
 
+def _find_live_event_for_block(app, block_id: int, event_id: str = "") -> dict | None:
+    try:
+        evs = app.events(max_age=30)
+    except Exception:
+        evs = []
+    for e in evs:
+        k, ref = tag_of(e)
+        if k == "block" and ref == int(block_id):
+            return e
+    if event_id:
+        for e in evs:
+            if e.get("id") == event_id or e.get("item_id") == event_id or e.get("ext_id") == event_id:
+                return e
+    return None
+
+
+def _sync_block_event(app, block_row: dict, old_start: str = None) -> dict | None:
+    """Reliably updates (or creates if missing on a scheduled task) the Apple Calendar event for a block."""
+    if not block_row:
+        return None
+    bid = int(block_row["id"])
+    tid = int(block_row["task_id"])
+    t = app.db.one("SELECT * FROM tasks WHERE id=?", (tid,))
+    event_id = (block_row.get("event_id") or "").strip()
+    live_ev = _find_live_event_for_block(app, bid, event_id)
+
+    notes = f"Planner Task #{tid}: {t['title'] if t else block_row['title']}\n"
+    if t and t.get("deadline"):
+        notes += f"Deadline: {t['deadline']}\n"
+    notes += f"\nplanner:block={bid}"
+    target_cal = block_row.get("calendar") or (app.calendar_for(t["category"]) if t else "Calendar")
+
+    if live_ev or event_id:
+        eid = (live_ev.get("id") if live_ev else None) or event_id
+        occ = (live_ev.get("occurrence") or live_ev.get("start")) if live_ev else (old_start or block_row.get("start"))
+        item_id = live_ev.get("item_id") if live_ev else None
+        ext_id = live_ev.get("ext_id") if live_ev else None
+        try:
+            ev = app.cal.update(
+                eid,
+                occurrence=occ,
+                item_id=item_id,
+                ext_id=ext_id,
+                title=block_row["title"],
+                start=block_row["start"],
+                end=block_row["end"],
+                notes=notes
+            )
+            new_eid = (ev or {}).get("id") or eid
+            if new_eid and new_eid != event_id:
+                app.db.update("blocks", bid, {"event_id": new_eid})
+            return ev
+        except Exception:
+            pass
+
+    if block_row.get("status") == "scheduled" or (t and t.get("status") == "scheduled"):
+        try:
+            app.cal.ensure(target_cal)
+            ev = app.cal.create(
+                calendar=target_cal,
+                title=block_row["title"],
+                start=block_row["start"],
+                end=block_row["end"],
+                notes=notes
+            )
+            new_eid = (ev or {}).get("id") or ""
+            app.db.update("blocks", bid, {"event_id": new_eid, "status": "scheduled"})
+            return ev
+        except Exception as e:
+            app.toast(f"Failed to sync calendar event for block #{bid}: {e}", "warning")
+    return None
+
+
 def realign_task_subtask_order(app, task_id: int) -> list:
     """Ensures that all unfinished subtask blocks of a task follow strict sequential subtask order (idx 0, 1, 2...) chronologically."""
     if not task_id:
@@ -430,12 +503,16 @@ def realign_task_subtask_order(app, task_id: int) -> list:
         return []
 
     sub_by_id = {s["id"]: s for s in subs}
-    blocks = app.db.q("SELECT * FROM blocks WHERE task_id=? ORDER BY start, end, id", (int(task_id),))
-    if len(blocks) <= 1:
+    blocks = app.db.q("SELECT * FROM blocks WHERE task_id=? AND status!='removed' ORDER BY start, end, id", (int(task_id),))
+    if not blocks:
         return []
 
-    # Match each block to its subtask (via subtask_id or title fallback)
-    matched_blocks = []
+    todo_subs = [s for s in subs if s.get("status") != "done"]
+    if not todo_subs:
+        todo_subs = list(subs)
+
+    now_dt = datetime.now()
+    active_blocks = []
     for b in blocks:
         sid = b.get("subtask_id")
         sub = sub_by_id.get(sid) if sid else None
@@ -445,35 +522,38 @@ def realign_task_subtask_order(app, task_id: int) -> list:
                 if s["title"] and s["title"].lower() in b_title:
                     sub = s
                     break
-        if sub and sub.get("status") != "done":
-            matched_blocks.append((b, sub))
+        # Leave already-completed past blocks untouched
+        if sub and sub.get("status") == "done" and dt(b["end"]) <= now_dt:
+            continue
+        active_blocks.append((b, sub))
 
-    if len(matched_blocks) <= 1:
+    if not active_blocks:
         return []
 
-    # The blocks are already in chronological order (by start, end, id).
-    # Sort their assigned subtasks by (subtask.idx, subtask.id) so earlier slots always get earlier subtasks.
-    ordered_subs = sorted([pair[1] for pair in matched_blocks], key=lambda s: (s.get("idx", 0), s["id"]))
+    # Build the ordered sequence of subtasks for active_blocks (which are already sorted chronologically by start, end, id)
+    valid_assigned = [sub for _, sub in active_blocks if sub is not None and sub.get("status") != "done"]
+    if len(valid_assigned) == len(active_blocks):
+        ordered_subs = sorted(valid_assigned, key=lambda s: (s.get("idx", 0), s["id"]))
+    else:
+        ordered_subs = [todo_subs[min(i, len(todo_subs) - 1)] for i in range(len(active_blocks))]
+
     task_title = (t.get("title") or t.get("input_text") or "Task").strip()
 
     updated = []
-    for (b, old_sub), new_sub in zip(matched_blocks, ordered_subs):
+    for (b, old_sub), new_sub in zip(active_blocks, ordered_subs):
         new_title = f"{task_title} ({new_sub['title']})"
         if b.get("subtask_id") != new_sub["id"] or b.get("title") != new_title:
             app.db.update("blocks", b["id"], {
                 "subtask_id": new_sub["id"],
                 "title": new_title
             })
-            if b.get("event_id"):
-                try:
-                    app.cal.update(b["event_id"], title=new_title)
-                except Exception:
-                    pass
+            updated_b = app.db.one("SELECT * FROM blocks WHERE id=?", (b["id"],))
+            _sync_block_event(app, updated_b, old_start=b["start"])
             updated.append({
                 "block_id": b["id"],
                 "start": b["start"],
                 "end": b["end"],
-                "old_subtask": old_sub["title"],
+                "old_subtask": old_sub["title"] if old_sub else "",
                 "new_subtask": new_sub["title"],
                 "title": new_title
             })
@@ -485,6 +565,7 @@ def move_block(app, block_id: int, new_start: str, new_end: str, preserve_subtas
     if not b:
         raise ValueError(f"Block #{block_id} not found")
 
+    old_start = b["start"]
     try:
         s_dt = datetime.fromisoformat(str(new_start)[:16])
         e_dt = datetime.fromisoformat(str(new_end)[:16])
@@ -502,12 +583,8 @@ def move_block(app, block_id: int, new_start: str, new_end: str, preserve_subtas
         "pinned": 1
     })
 
-    # Update calendar event if already scheduled
-    if b.get("event_id"):
-        try:
-            app.cal.update(b["event_id"], start=ns_clean, end=ne_clean)
-        except Exception as e:
-            app.toast(f"Failed to move calendar event: {e}", "warning")
+    updated_b = app.db.one("SELECT * FROM blocks WHERE id=?", (block_id,))
+    _sync_block_event(app, updated_b, old_start=old_start)
 
     realigned = []
     if preserve_subtask_order and b.get("task_id"):
@@ -522,67 +599,119 @@ def move_block(app, block_id: int, new_start: str, new_end: str, preserve_subtas
     return out
 
 
-def swap_blocks(app, block_a_id: int, block_b_id: int) -> dict:
+def swap_blocks(app, block_a_id, block_b_id) -> dict:
     """Swaps the scheduled time slots of two blocks (across different tasks or within the same task) and preserves sequential subtask order."""
-    ba = app.db.one("SELECT * FROM blocks WHERE id=?", (int(block_a_id),))
-    bb = app.db.one("SELECT * FROM blocks WHERE id=?", (int(block_b_id),))
+    def _resolve_block(val):
+        if val is None:
+            return None
+        try:
+            b = app.db.one("SELECT * FROM blocks WHERE id=?", (int(val),))
+            if b:
+                return b
+        except (ValueError, TypeError):
+            pass
+        s_val = str(val).strip()
+        if s_val:
+            return app.db.one("SELECT * FROM blocks WHERE event_id=?", (s_val,))
+        return None
+
+    ba = _resolve_block(block_a_id)
+    bb = _resolve_block(block_b_id)
     if not ba or not bb:
         raise ValueError("Both blocks must exist to swap their slots")
     if ba["id"] == bb["id"]:
         raise ValueError("Cannot swap a block with itself")
 
+    old_a_start = ba["start"]
+    old_b_start = bb["start"]
     sa_dt, ea_dt = dt(ba["start"]), dt(ba["end"])
     sb_dt, eb_dt = dt(bb["start"]), dt(bb["end"])
     dur_a = ea_dt - sa_dt
     dur_b = eb_dt - sb_dt
 
-    # Place block A at B's start, and block B at A's start (preserving each block's duration)
-    new_a_start = sb_dt.strftime("%Y-%m-%dT%H:%M")
-    new_a_end = (sb_dt + dur_a).strftime("%Y-%m-%dT%H:%M")
-    new_b_start = sa_dt.strftime("%Y-%m-%dT%H:%M")
-    new_b_end = (sa_dt + dur_b).strftime("%Y-%m-%dT%H:%M")
+    # Order the two blocks chronologically as (first, second) so adjacent/same-day blocks of different durations never overlap after swapping
+    if sa_dt <= sb_dt:
+        first_is_a = True
+        s1, e1, d1 = sa_dt, ea_dt, dur_a
+        s2, e2, d2 = sb_dt, eb_dt, dur_b
+    else:
+        first_is_a = False
+        s1, e1, d1 = sb_dt, eb_dt, dur_b
+        s2, e2, d2 = sa_dt, ea_dt, dur_a
+
+    # The later block (2) moves to the earlier block's start (s1)
+    new_2_start_dt = s1
+    new_2_end_dt = s1 + d2
+
+    # The earlier block (1) moves to the later block's slot; if they are adjacent or would overlap, place block 1 right after block 2's new end
+    gap = s2 - e1
+    if s1.date() == s2.date() and (abs(gap.total_seconds()) <= 900 or new_2_end_dt > s2):
+        preserved_gap = gap if gap.total_seconds() > 0 else timedelta(0)
+        new_1_start_dt = new_2_end_dt + preserved_gap
+    else:
+        new_1_start_dt = s2
+    new_1_end_dt = new_1_start_dt + d1
+
+    if first_is_a:
+        new_a_start, new_a_end = new_1_start_dt.strftime("%Y-%m-%dT%H:%M"), new_1_end_dt.strftime("%Y-%m-%dT%H:%M")
+        new_b_start, new_b_end = new_2_start_dt.strftime("%Y-%m-%dT%H:%M"), new_2_end_dt.strftime("%Y-%m-%dT%H:%M")
+    else:
+        new_b_start, new_b_end = new_1_start_dt.strftime("%Y-%m-%dT%H:%M"), new_1_end_dt.strftime("%Y-%m-%dT%H:%M")
+        new_a_start, new_a_end = new_2_start_dt.strftime("%Y-%m-%dT%H:%M"), new_2_end_dt.strftime("%Y-%m-%dT%H:%M")
 
     app.db.update("blocks", ba["id"], {"start": new_a_start, "end": new_a_end, "pinned": 1})
     app.db.update("blocks", bb["id"], {"start": new_b_start, "end": new_b_end, "pinned": 1})
 
-    if ba.get("event_id"):
-        try:
-            app.cal.update(ba["event_id"], start=new_a_start, end=new_a_end)
-        except Exception as e:
-            app.toast(f"Failed to update event for block #{ba['id']}: {e}", "warning")
-    if bb.get("event_id"):
-        try:
-            app.cal.update(bb["event_id"], start=new_b_start, end=new_b_end)
-        except Exception as e:
-            app.toast(f"Failed to update event for block #{bb['id']}: {e}", "warning")
+    # If swapping two blocks of the SAME task, also swap their subtask order (idx) so realign does not undo the user's explicit swap
+    realigned_a, realigned_b = [], []
+    if ba.get("task_id") and ba.get("task_id") == bb.get("task_id"):
+        if ba.get("subtask_id") and bb.get("subtask_id") and ba["subtask_id"] != bb["subtask_id"]:
+            sub_a = app.db.one("SELECT * FROM subtasks WHERE id=?", (int(ba["subtask_id"]),))
+            sub_b = app.db.one("SELECT * FROM subtasks WHERE id=?", (int(bb["subtask_id"]),))
+            if sub_a and sub_b:
+                app.db.update("subtasks", sub_a["id"], {"idx": sub_b.get("idx", 0)})
+                app.db.update("subtasks", sub_b["id"], {"idx": sub_a.get("idx", 0)})
+        _sync_block_event(app, app.db.one("SELECT * FROM blocks WHERE id=?", (ba["id"],)), old_start=old_a_start)
+        _sync_block_event(app, app.db.one("SELECT * FROM blocks WHERE id=?", (bb["id"],)), old_start=old_b_start)
+    else:
+        _sync_block_event(app, app.db.one("SELECT * FROM blocks WHERE id=?", (ba["id"],)), old_start=old_a_start)
+        _sync_block_event(app, app.db.one("SELECT * FROM blocks WHERE id=?", (bb["id"],)), old_start=old_b_start)
+        if ba.get("task_id"):
+            realigned_a = realign_task_subtask_order(app, ba["task_id"])
+        if bb.get("task_id"):
+            realigned_b = realign_task_subtask_order(app, bb["task_id"])
 
-    realigned_a = realign_task_subtask_order(app, ba["task_id"]) if ba.get("task_id") else []
-    realigned_b = (
-        realign_task_subtask_order(app, bb["task_id"])
-        if bb.get("task_id") and bb.get("task_id") != ba.get("task_id")
-        else []
-    )
-
-    summary = f"Swapped '{ba['title']}' ({new_a_start}) ⇄ '{bb['title']}' ({new_b_start})"
+    ba_final = app.db.one("SELECT * FROM blocks WHERE id=?", (ba["id"],))
+    bb_final = app.db.one("SELECT * FROM blocks WHERE id=?", (bb["id"],))
+    summary = f"Swapped '{ba_final['title']}' ({new_a_start.replace('T', ' ')}) ⇄ '{bb_final['title']}' ({new_b_start.replace('T', ' ')})"
     app.toast(summary, "success")
     app.notify("tasks_changed", {"action": "blocks_swapped", "a": ba["id"], "b": bb["id"]})
     app.notify("events_changed", {"action": "blocks_swapped", "a": ba["id"], "b": bb["id"]})
     return {
         "ok": True,
         "summary": summary,
-        "block_a": app.db.one("SELECT * FROM blocks WHERE id=?", (ba["id"],)),
-        "block_b": app.db.one("SELECT * FROM blocks WHERE id=?", (bb["id"],)),
+        "block_a": ba_final,
+        "block_b": bb_final,
         "realigned": realigned_a + realigned_b
     }
 
 
-def cascade_task_from_block(app, task_id: int = None, block_id: int = None, earliest_start: str = None) -> dict:
+def cascade_task_from_block(app, task_id: int = None, block_id=None, earliest_start: str = None, event_id: str = None) -> dict:
     """Pushes a subtask block (e.g. when the previous subtask overran its slot) and cascades all subsequent subtasks forward in strict sequential order."""
     target_block = None
-    if block_id:
-        target_block = app.db.one("SELECT * FROM blocks WHERE id=?", (int(block_id),))
+    if block_id is not None:
+        try:
+            target_block = app.db.one("SELECT * FROM blocks WHERE id=?", (int(block_id),))
+        except (ValueError, TypeError):
+            target_block = app.db.one("SELECT * FROM blocks WHERE event_id=?", (str(block_id).strip(),))
         if target_block and not task_id:
             task_id = target_block["task_id"]
+
+    if not target_block and event_id:
+        target_block = app.db.one("SELECT * FROM blocks WHERE event_id=?", (str(event_id).strip(),))
+        if target_block and not task_id:
+            task_id = target_block["task_id"]
+
     if not task_id:
         raise ValueError("task_id or block_id is required")
 
@@ -590,120 +719,89 @@ def cascade_task_from_block(app, task_id: int = None, block_id: int = None, earl
     if not t:
         raise ValueError(f"Task #{task_id} not found")
 
-    all_blocks = app.db.q("SELECT * FROM blocks WHERE task_id=? ORDER BY start, end, id", (int(task_id),))
+    # First ensure all existing blocks of this task have sequential subtask assignments
+    realign_task_subtask_order(app, int(task_id))
+
+    all_blocks = app.db.q("SELECT * FROM blocks WHERE task_id=? AND status!='removed' ORDER BY start, end, id", (int(task_id),))
     if not all_blocks:
         raise ValueError(f"Task #{task_id} has no blocks to cascade")
 
     if not target_block:
         target_block = all_blocks[0]
+    else:
+        target_block = app.db.one("SELECT * FROM blocks WHERE id=?", (target_block["id"],)) or all_blocks[0]
 
-    # Split into fixed blocks ( strictly before target_block ) and cascading blocks ( target_block and onwards )
-    fixed_blocks = [b for b in all_blocks if b["start"] < target_block["start"] and b["id"] != target_block["id"]]
-    cascading_blocks = [b for b in all_blocks if b["id"] == target_block["id"] or b["start"] >= target_block["start"]]
+    old_target_start = target_block["start"]
+    dur_mins = max(15, int((dt(target_block["end"]) - dt(target_block["start"])).total_seconds() // 60))
+    last_block_end = max(dt(b["end"]) for b in all_blocks)
 
-    # Determine the earliest start time for the cascaded chain:
-    # By default, start right after target_block's current end (since the previous subtask occupied target_block's slot!)
+    # Determine where the newly added replacement slot at the end of the chain should start searching:
+    # By shifting target_block's slot to the next free slot after the chain (or after earliest_start) and realigning,
+    # Subtask k moves into Block k+1's slot, Subtask k+1 moves into Block k+2's slot, and the last subtask lands in the new slot!
     if earliest_start:
         es_str = str(earliest_start).strip()[:16]
         if len(es_str) == 10:
             es_str += "T09:00"
-        cascade_after_dt = dt(es_str)
+        search_from_dt = max(dt(es_str), datetime.now())
     else:
-        cascade_after_dt = max(dt(target_block["end"]), datetime.now())
+        search_from_dt = max(last_block_end, dt(target_block["end"]), datetime.now())
 
-    # Build ordered subtask items to re-place for the cascading blocks
-    subs = app.db.q("SELECT * FROM subtasks WHERE task_id=? ORDER BY idx, id", (int(task_id),))
-    sub_by_id = {s["id"]: s for s in subs}
-
-    sub_items = []
-    for b in cascading_blocks:
-        s_obj = sub_by_id.get(b.get("subtask_id"))
-        if not s_obj:
-            b_title = (b.get("title") or "").lower()
-            for s in subs:
-                if s["title"] and s["title"].lower() in b_title:
-                    s_obj = s
-                    break
-        dur_mins = max(15, int((dt(b["end"]) - dt(b["start"])).total_seconds() // 60))
-        if s_obj:
-            sub_items.append({
-                "key": s_obj["id"],
-                "idx": s_obj.get("idx", 0),
-                "title": s_obj["title"],
-                "minutes": dur_mins
-            })
-        else:
-            sub_items.append({
-                "key": None,
-                "idx": 999,
-                "title": b.get("title") or t["title"],
-                "minutes": dur_mins
-            })
-
-    # Ensure strict sequential subtask order (idx 0, 1, 2...)
-    sub_items.sort(key=lambda x: x["idx"])
-
-    # Remove old calendar events for the cascading blocks
-    for cb in cascading_blocks:
-        if cb.get("event_id"):
-            try:
-                app.cal.delete(cb["event_id"])
-            except Exception:
-                pass
-        app.db.x("DELETE FROM blocks WHERE id=?", (cb["id"],))
-
-    # Compute busy intervals (including fixed_blocks of this task + all other events/tasks)
+    # Build busy intervals from all calendar events + all other blocks (including the other blocks of this task!)
     busy = app.busy(exclude_task_id=int(task_id))
     load = app.day_load(exclude_task_id=int(task_id))
-    for fb in fixed_blocks:
-        s_fb, e_fb = dt(fb["start"]), dt(fb["end"])
-        busy.append((s_fb, e_fb))
-        day_k = s_fb.strftime("%Y-%m-%d")
-        load[day_k] = load.get(day_k, 0) + int((e_fb - s_fb).total_seconds() // 60)
+    for ob in all_blocks:
+        if ob["id"] == target_block["id"]:
+            continue
+        s_ob, e_ob = dt(ob["start"]), dt(ob["end"])
+        busy.append((s_ob, e_ob))
+        day_k = s_ob.strftime("%Y-%m-%d")
+        load[day_k] = load.get(day_k, 0) + int((e_ob - s_ob).total_seconds() // 60)
 
-    # Also block everything before cascade_after_dt on its starting day so placement begins strictly after the overrun slot
-    day_floor = cascade_after_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    if cascade_after_dt > day_floor:
-        busy.append((day_floor, cascade_after_dt))
+    # Also block target_block's old slot so we don't place right back into the overrun slot
+    busy.append((dt(target_block["start"]), dt(target_block["end"])))
+
+    # Block time before search_from_dt on its starting day
+    day_floor = search_from_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    if search_from_dt > day_floor:
+        busy.append((day_floor, search_from_dt))
 
     prefs = json.loads(t.get("prefs_json") or "{}")
     sch = Scheduler(app.cfg, busy=busy, load=load)
     placement = sch.place(
-        subtasks=sub_items,
+        subtasks=[{"key": target_block.get("subtask_id"), "title": target_block["title"], "minutes": dur_mins}],
         deadline=t.get("deadline"),
-        earliest=cascade_after_dt.strftime("%Y-%m-%d"),
+        earliest=search_from_dt.strftime("%Y-%m-%d"),
         pref=prefs.get("preferred_time", "any"),
-        max_block=prefs.get("max_block_minutes"),
+        max_block=max(dur_mins, int(prefs.get("max_block_minutes") or 120)),
         spread=False
     )
 
-    target_cal = app.calendar_for(t["category"])
-    total_subs = max(len(subs), len(all_blocks))
-    for b in placement["blocks"]:
-        b_title = f"{t['title']} ({b['title']})" if total_subs > 1 and not str(b["title"]).startswith(t["title"]) else b["title"]
-        app.db.insert("blocks", {
-            "task_id": int(task_id),
-            "subtask_id": b["key"],
-            "start": b["start"],
-            "end": b["end"],
-            "status": "proposed",
-            "calendar": target_cal,
-            "event_id": "",
-            "title": b_title,
-            "pinned": 0
-        })
+    if not placement["blocks"]:
+        raise ValueError("No free slot found on the calendar to cascade into")
 
-    if t.get("status") == "scheduled":
-        schedule_task(app, int(task_id))
+    new_slot = placement["blocks"][0]
+    app.db.update("blocks", target_block["id"], {
+        "start": new_slot["start"],
+        "end": new_slot["end"],
+        "pinned": 1
+    })
+    updated_target = app.db.one("SELECT * FROM blocks WHERE id=?", (target_block["id"],))
+    _sync_block_event(app, updated_target, old_start=old_target_start)
 
-    realign_task_subtask_order(app, int(task_id))
-    summary = f"Cascaded {len(placement['blocks'])} subtask block(s) in sequential order starting after {cascade_after_dt.strftime('%a %H:%M')}"
+    # Now realign all blocks of the task chronologically so Subtask k -> Slot k+1, Subtask k+1 -> Slot k+2, ..., Last Subtask -> New Slot!
+    realigned = realign_task_subtask_order(app, int(task_id))
+
+    summary = (
+        f"Cascaded subtasks in sequential order · added slot {new_slot['start'].replace('T', ' ')}–{new_slot['end'][11:16]} "
+        f"and shifted {len(realigned)} block(s)"
+    )
     app.toast(summary, "success")
     app.notify("tasks_changed", {"action": "cascaded", "id": int(task_id)})
     app.notify("events_changed", {"action": "cascaded", "id": int(task_id)})
     return {
         "ok": True,
         "summary": summary,
+        "realigned": realigned,
         "task": get_task_full(app, int(task_id))
     }
 

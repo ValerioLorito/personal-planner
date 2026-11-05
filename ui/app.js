@@ -819,11 +819,31 @@ function extractEventRichInfo(item, isBlock = false) {
     }
   });
 
-  if (blockId && !taskId) {
-    (S.tasks || []).forEach(t => {
-      if ((t.blocks || []).some(b => b.id === blockId)) {
+  // Verify blockId against live S.tasks and fall back to event_id or timestamp match if needed
+  let verifiedBlock = null;
+  (S.tasks || []).forEach(t => {
+    (t.blocks || []).forEach(b => {
+      if (blockId && b.id === blockId) {
+        verifiedBlock = b;
         taskId = t.id;
       }
+    });
+  });
+  if (!verifiedBlock) {
+    const itemStart16 = (item.start || '').slice(0, 16);
+    (S.tasks || []).forEach(t => {
+      if (verifiedBlock) return;
+      (t.blocks || []).forEach(b => {
+        if (verifiedBlock) return;
+        if (item.id && b.event_id && b.event_id === item.id) {
+          verifiedBlock = b;
+          blockId = b.id;
+          taskId = t.id;
+        } else if (taskId && t.id === taskId && itemStart16 && (b.start || '').slice(0, 16) === itemStart16) {
+          verifiedBlock = b;
+          blockId = b.id;
+        }
+      });
     });
   }
 
@@ -2407,23 +2427,36 @@ async function renderMemoryView() {
           showDate: false,
           showNote: false,
           onSave: async ({ minutes }) => {
-            await api(`/api/samples/${s.id}/update`, {
-              method: 'POST',
-              body: { actual: minutes }
-            });
-            showToast(`Updated sample '${s.label}' to ${minutes}m`, 'success');
-            loadState();
+            try {
+              await api(`/api/samples/${s.id}/update`, {
+                method: 'POST',
+                body: { actual: minutes }
+              });
+              showToast(`Updated sample '${s.label}' to ${minutes}m`, 'success');
+              await renderMemoryView();
+              loadState();
+            } catch (err) {
+              showToast('Could not update sample: ' + err.message, 'error');
+            }
           }
         });
       });
       tr.querySelector('.btn-del-sample').addEventListener('click', async () => {
-        await api(`/api/samples/${s.id}`, { method: 'DELETE' });
-        showToast(`Deleted calibration sample '${s.label}'`, 'info');
-        loadState();
+        try {
+          await api(`/api/samples/${s.id}/delete`, { method: 'POST', body: {} });
+          tr.remove();
+          showToast(`Deleted calibration sample '${s.label}'`, 'info');
+          await renderMemoryView();
+          loadState();
+        } catch (err) {
+          showToast('Could not delete sample: ' + err.message, 'error');
+        }
       });
       tbody.appendChild(tr);
     });
-  } catch (err) {}
+  } catch (err) {
+    console.error('renderMemoryView error:', err);
+  }
 
   // Beliefs
   const bList = document.getElementById('beliefs-list');
@@ -2434,14 +2467,20 @@ async function renderMemoryView() {
     item.innerHTML = `
       <div><span class="belief-scope">[${escapeHtml(b.scope)}]</span> ${escapeHtml(b.text)}</div>
       <div style="display:flex;gap:4px">
-        <button class="btn btn-sm btn-icon btn-edit-belief" title="Edit Belief">✎</button>
-        <button class="btn btn-sm btn-icon btn-del-belief" title="Delete Belief">✕</button>
+        <button type="button" class="btn btn-sm btn-icon btn-edit-belief" title="Edit Belief">✎</button>
+        <button type="button" class="btn btn-sm btn-icon btn-del-belief" title="Delete Belief">✕</button>
       </div>
     `;
     item.querySelector('.btn-edit-belief').addEventListener('click', () => openBeliefDialog(b));
     item.querySelector('.btn-del-belief').addEventListener('click', async () => {
-      await api(`/api/beliefs/${b.id}`, { method: 'DELETE' });
-      loadState();
+      try {
+        await api(`/api/beliefs/${b.id}`, { method: 'DELETE' });
+        item.remove();
+        showToast('Belief deleted', 'info');
+        loadState();
+      } catch (err) {
+        showToast('Could not delete belief: ' + err.message, 'error');
+      }
     });
     bList.appendChild(item);
   });
@@ -3289,7 +3328,9 @@ function initEventInspector() {
         const res = await api(`/api/tasks/${item.task_id}/cascade_block`, {
           method: 'POST',
           body: {
-            block_id: item.block_id || item.id
+            task_id: item.task_id,
+            block_id: item.block_id || null,
+            event_id: item.id || null
           }
         });
         showToast(res.summary || 'Pushed & cascaded subtasks in sequential order', 'success');
