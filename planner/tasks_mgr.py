@@ -10,7 +10,154 @@ from . import memory
 from .agents import task_agent
 from .calendar import dt, tag_of
 from .db import now_iso
-from .scheduler import Scheduler, parse_deadline
+from .scheduler import Scheduler, parse_deadline, hm
+
+
+def find_conflicting_events(app, start, end, exclude_task_id: int = None, exclude_block_id: int = None) -> list:
+    """Finds all calendar events and other task blocks that overlap with [start, end]."""
+    s_dt = dt(str(start)[:16]) if isinstance(start, str) else start
+    e_dt = dt(str(end)[:16]) if isinstance(end, str) else end
+    conflicts = []
+    seen = set()
+
+    # 1. Calendar events
+    try:
+        evs = app.events(max_age=30)
+    except Exception:
+        evs = []
+
+    ex_block_ids = set()
+    ex_event_ids = set()
+    if exclude_block_id:
+        ex_block_ids.add(int(exclude_block_id))
+        brow = app.db.one("SELECT event_id FROM blocks WHERE id=?", (int(exclude_block_id),))
+        if brow and brow.get("event_id"):
+            ex_event_ids.add(brow["event_id"])
+    if exclude_task_id:
+        t_b_rows = app.db.q("SELECT id, event_id FROM blocks WHERE task_id=?", (int(exclude_task_id),))
+        for r in t_b_rows:
+            ex_block_ids.add(r["id"])
+            if r.get("event_id"):
+                ex_event_ids.add(r["event_id"])
+
+    for e in evs:
+        if e.get("all_day") or not e.get("start") or not e.get("end"):
+            continue
+        eid = e.get("id") or ""
+        if eid and eid in ex_event_ids:
+            continue
+        kind, ref = tag_of(e)
+        if kind == "block" and ref in ex_block_ids:
+            continue
+        try:
+            ev_s = dt(e["start"])
+            ev_e = dt(e["end"])
+        except Exception:
+            continue
+        if ev_s < e_dt and ev_e > s_dt:
+            key = (e.get("title"), ev_s.isoformat(), ev_e.isoformat())
+            if key not in seen:
+                seen.add(key)
+                conflicts.append({
+                    "title": e.get("title") or "Event",
+                    "calendar": e.get("calendar") or "",
+                    "start": ev_s,
+                    "end": ev_e,
+                    "source": "calendar",
+                    "event_id": eid
+                })
+
+    # 2. Database blocks (other proposed or scheduled blocks)
+    rows = app.db.q("SELECT b.*, t.title as task_title FROM blocks b JOIN tasks t ON t.id = b.task_id WHERE b.status IN ('proposed', 'scheduled')")
+    for b in rows:
+        if b["id"] in ex_block_ids:
+            continue
+        if exclude_task_id and b["task_id"] == int(exclude_task_id):
+            continue
+        if b.get("event_id") and (b["event_id"] in ex_event_ids or any(c.get("event_id") == b["event_id"] for c in conflicts)):
+            continue
+        try:
+            bs = dt(b["start"])
+            be = dt(b["end"])
+        except Exception:
+            continue
+        if bs < e_dt and be > s_dt:
+            b_title = b.get("title") or b.get("task_title") or "Planned Task"
+            key = (b_title, bs.isoformat(), be.isoformat())
+            if key not in seen:
+                seen.add(key)
+                conflicts.append({
+                    "title": b_title,
+                    "calendar": b.get("calendar") or "",
+                    "start": bs,
+                    "end": be,
+                    "source": "block"
+                })
+    return conflicts
+
+
+def find_nearest_free_slot(app, target_start, duration_minutes: int, exclude_task_id: int = None, exclude_block_id: int = None) -> tuple[datetime, datetime]:
+    """Finds the closest non-overlapping free slot inside working hours fitting duration_minutes."""
+    s_dt = dt(str(target_start)[:16]) if isinstance(target_start, str) else target_start
+    dur = max(15, int(duration_minutes or 30))
+    e_dt = s_dt + timedelta(minutes=dur)
+
+    conflicts = find_conflicting_events(app, s_dt, e_dt, exclude_task_id=exclude_task_id, exclude_block_id=exclude_block_id)
+    w = app.cfg.get("work", {})
+    day_start_h, day_start_m = hm(w.get("day_start", "09:00"))
+    day_end_h, day_end_m = hm(w.get("day_end", "19:00"))
+    ws = s_dt.replace(hour=day_start_h, minute=day_start_m, second=0, microsecond=0)
+    we = s_dt.replace(hour=day_end_h, minute=day_end_m, second=0, microsecond=0)
+
+    if not conflicts and s_dt >= ws and e_dt <= we:
+        return s_dt, e_dt
+
+    busy = app.busy(exclude_task_id=exclude_task_id)
+    if exclude_block_id and not exclude_task_id:
+        b_row = app.db.one("SELECT start, end FROM blocks WHERE id=?", (int(exclude_block_id),))
+        if b_row:
+            b_s, b_e = dt(b_row["start"]), dt(b_row["end"])
+            busy = [inv for inv in busy if not (inv[0] == b_s and inv[1] == b_e)]
+
+    sch = Scheduler(app.cfg, busy=busy, now=min(datetime.now(), s_dt))
+    candidates = []
+
+    for day_offset in range(14):
+        d_day = (s_dt + timedelta(days=day_offset)).replace(hour=0, minute=0, second=0, microsecond=0)
+        is_work_day = d_day.weekday() in w.get("days", [0, 1, 2, 3, 4])
+        if not is_work_day and not w.get("weekend_if_needed", True):
+            continue
+        gaps = sch.gaps(d_day)
+        for gs, ge in gaps:
+            gap_dur = (ge - gs).total_seconds() / 60
+            if gap_dur < dur:
+                continue
+            if gs <= s_dt and (s_dt + timedelta(minutes=dur)) <= ge:
+                return s_dt, s_dt + timedelta(minutes=dur)
+            elif gs >= s_dt:
+                cand_s = gs
+                cand_e = cand_s + timedelta(minutes=dur)
+                dist = (cand_s - s_dt).total_seconds()
+                candidates.append((dist, cand_s, cand_e))
+            elif ge <= s_dt:
+                cand_s = ge - timedelta(minutes=dur)
+                cand_e = ge
+                dist = (s_dt - cand_s).total_seconds() * 1.5
+                candidates.append((dist, cand_s, cand_e))
+            else:
+                cand_s = ge - timedelta(minutes=dur)
+                cand_e = ge
+                dist = abs((cand_s - s_dt).total_seconds()) * 1.2
+                candidates.append((dist, cand_s, cand_e))
+
+        if candidates:
+            break
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1], candidates[0][2]
+
+    return s_dt, e_dt
 
 
 def submit_task_input(app, input_text: str, category: str = "", target_task_id: int = None, on_trace=None) -> dict:
@@ -78,9 +225,20 @@ def submit_task_input(app, input_text: str, category: str = "", target_task_id: 
                 continue
             s_str = str(fb["start"]).strip()[:16]
             e_str = str(fb.get("end") or "").strip()[:16]
+            dur_m = sub_keys[min(i, len(sub_keys) - 1)]["minutes"] if sub_keys else 60
             if not e_str:
-                dur_m = sub_keys[min(i, len(sub_keys) - 1)]["minutes"] if sub_keys else 60
                 e_str = (dt(s_str) + timedelta(minutes=dur_m)).strftime("%Y-%m-%dT%H:%M")
+            else:
+                dur_m = max(15, int((dt(e_str) - dt(s_str)).total_seconds() // 60))
+
+            conflicts = find_conflicting_events(app, s_str, e_str, exclude_task_id=task_id)
+            if conflicts:
+                free_s, free_e = find_nearest_free_slot(app, s_str, dur_m, exclude_task_id=task_id)
+                s_str = free_s.strftime("%Y-%m-%dT%H:%M")
+                e_str = free_e.strftime("%Y-%m-%dT%H:%M")
+                c_names = ", ".join(c["title"] for c in conflicts[:2])
+                app.toast(f"Shifted fixed block to {s_str[11:16]}–{e_str[11:16]} to avoid conflict with '{c_names}'", "info")
+
             sub_ref = sub_keys[min(i, len(sub_keys) - 1)]["key"] if sub_keys else None
             b_title = fb.get("title") or (f"{plan['title']} ({sub_keys[min(i, len(sub_keys)-1)]['title']})" if len(sub_keys) > 1 else plan["title"])
             app.db.insert("blocks", {
@@ -133,6 +291,53 @@ def submit_task_input(app, input_text: str, category: str = "", target_task_id: 
     return get_task_full(app, task_id)
 
 
+def _clean_task_calendar_events(app, task_id: int, known_event_ids: list = None) -> int:
+    """Deletes all Apple Calendar events associated with task_id.
+    Deletes known event IDs and scans live calendar for any event tagged
+    with this task or its blocks, ensuring no ghost/duplicate events are left behind.
+    """
+    deleted = 0
+    to_delete = set(known_event_ids or [])
+
+    block_rows = app.db.q("SELECT id, event_id FROM blocks WHERE task_id=?", (task_id,))
+    task_block_ids = {int(b["id"]) for b in block_rows if b.get("id")}
+    for b in block_rows:
+        if b.get("event_id"):
+            to_delete.add(str(b["event_id"]).strip())
+
+    try:
+        events = app.events(max_age=10, refresh=True)
+    except Exception:
+        events = []
+
+    for ev in events:
+        eid = str(ev.get("id") or ev.get("item_id") or "").strip()
+        notes = str(ev.get("notes") or "")
+        k, ref = tag_of(ev)
+
+        matches = False
+        if eid and eid in to_delete:
+            matches = True
+        elif f"Planner Task #{task_id}" in notes or f"planner:task={task_id}" in notes:
+            matches = True
+        elif k == "block" and ref in task_block_ids:
+            matches = True
+
+        if matches and eid:
+            to_delete.add(eid)
+
+    for eid in to_delete:
+        if not eid:
+            continue
+        try:
+            if app.cal.delete(eid):
+                deleted += 1
+        except Exception:
+            pass
+
+    return deleted
+
+
 def reschedule_task_blocks(app, task_id: int, earliest: str = None, preferred_time: str = None,
                            deadline: str = None) -> dict:
     """Re-places all blocks of an existing task under updated scheduling constraints."""
@@ -142,7 +347,10 @@ def reschedule_task_blocks(app, task_id: int, earliest: str = None, preferred_ti
 
     prefs = json.loads(t.get("prefs_json") or "{}")
     if earliest is not None:
-        prefs["earliest"] = earliest
+        if earliest:
+            prefs["earliest"] = str(earliest).strip()
+        else:
+            prefs.pop("earliest", None)
     if preferred_time in ("morning", "afternoon", "evening", "any"):
         prefs["preferred_time"] = preferred_time
     new_dl = t.get("deadline") or ""
@@ -158,13 +366,7 @@ def reschedule_task_blocks(app, task_id: int, earliest: str = None, preferred_ti
     })
 
     # Remove old calendar events if the task was scheduled
-    old_blocks = app.db.q("SELECT * FROM blocks WHERE task_id=?", (task_id,))
-    for ob in old_blocks:
-        if ob.get("event_id"):
-            try:
-                app.cal.delete(ob["event_id"])
-            except Exception:
-                pass
+    _clean_task_calendar_events(app, task_id)
     app.db.x("DELETE FROM blocks WHERE task_id=?", (task_id,))
 
     subs = app.db.q("SELECT * FROM subtasks WHERE task_id=? ORDER BY idx", (task_id,))
@@ -237,13 +439,18 @@ def apply_task_edits(app, edits: list, reply: str = "", trace: list = None,
         if not isinstance(e, dict):
             continue
         action = (e.get("action") or "move_block").strip().lower()
-        tid = e.get("task_id") or fallback_task_id
+        tid = int(fallback_task_id) if fallback_task_id else (int(e.get("task_id")) if e.get("task_id") else None)
         bid = e.get("block_id")
 
-        if not tid and bid:
+        if bid:
             b_row = app.db.one("SELECT task_id FROM blocks WHERE id=?", (int(bid),))
             if b_row:
-                tid = b_row["task_id"]
+                if fallback_task_id and b_row["task_id"] != int(fallback_task_id):
+                    # Re-anchor to the fallback task's block if block_id belongs to another task
+                    t_blocks = app.db.q("SELECT id FROM blocks WHERE task_id=? ORDER BY start", (int(fallback_task_id),))
+                    bid = t_blocks[0]["id"] if t_blocks else None
+                elif not tid:
+                    tid = b_row["task_id"]
         if tid:
             tid = int(tid)
             last_tid = tid
@@ -265,10 +472,13 @@ def apply_task_edits(app, edits: list, reply: str = "", trace: list = None,
                 else:
                     dur = dt(b["end"]) - dt(b["start"])
                     ne = (dt(ns) + dur).strftime("%Y-%m-%dT%H:%M")
-                move_block(app, b["id"], ns, ne)
+                moved = move_block(app, b["id"], ns, ne)
                 if e.get("deadline") and tid:
                     update_task_deadline(app, tid, e["deadline"])
-                applied.append(f"Moved block #{b['id']} to {ns}–{ne}")
+                final_s = moved.get("start") if moved else ns
+                final_e = moved.get("end") if moved else ne
+                note = " (shifted to avoid conflict)" if final_s != ns else ""
+                applied.append(f"Moved block #{b['id']} to {final_s}–{final_e}{note}")
 
         elif action == "reschedule_task" and tid:
             reschedule_task_blocks(
@@ -304,6 +514,14 @@ def apply_task_edits(app, edits: list, reply: str = "", trace: list = None,
                 ne = str(e.get("new_end") or "").strip()[:16]
                 if not ne:
                     ne = (dt(ns) + timedelta(minutes=60)).strftime("%Y-%m-%dT%H:%M")
+                dur_m = max(15, int((dt(ne) - dt(ns)).total_seconds() // 60))
+                conflicts = find_conflicting_events(app, ns, ne, exclude_task_id=tid)
+                if conflicts:
+                    free_s, free_e = find_nearest_free_slot(app, ns, dur_m, exclude_task_id=tid)
+                    ns = free_s.strftime("%Y-%m-%dT%H:%M")
+                    ne = free_e.strftime("%Y-%m-%dT%H:%M")
+                    c_names = ", ".join(c["title"] for c in conflicts[:2])
+                    app.toast(f"Shifted new block to {ns[11:16]}–{ne[11:16]} to avoid conflict with '{c_names}'", "info")
                 b_title = str(e.get("title") or t_row["title"] or "Work block").strip()
                 target_cal = app.calendar_for(t_row["category"])
                 app.db.insert("blocks", {
@@ -328,22 +546,29 @@ def apply_task_edits(app, edits: list, reply: str = "", trace: list = None,
             applied.append(swap_res.get("summary") or f"Swapped block #{bid} with block #{other_bid}")
 
         elif action in ("cascade_subtasks", "cascade_from_block") and (tid or bid):
-            cascade_res = cascade_task_from_block(
-                app,
-                task_id=tid,
-                block_id=int(bid) if bid else None,
-                earliest_start=e.get("new_start") or e.get("earliest")
-            )
-            applied.append(cascade_res.get("summary") or f"Cascaded subtasks in order for task #{tid}")
+            reschedule_task_blocks(app, tid, earliest=e.get("new_start") or e.get("earliest"))
+            applied.append(f"Rescheduled subtasks in sequential order for task #{tid}")
 
         elif action in ("realign_subtasks", "reorder_subtasks") and tid:
             changed = realign_task_subtask_order(app, tid)
             applied.append(f"Realigned {len(changed)} subtask block(s) in sequential order for task #{tid}")
 
-    if last_tid and trace:
-        t_exists = app.db.one("SELECT id FROM tasks WHERE id=?", (last_tid,))
-        if t_exists:
-            app.db.update("tasks", last_tid, {"trace_json": trace, "updated_at": now_iso()})
+    t_row = app.db.one("SELECT id, title FROM tasks WHERE id=?", (last_tid,)) if last_tid else None
+    if last_tid and trace and t_row:
+        app.db.update("tasks", last_tid, {"trace_json": trace, "updated_at": now_iso()})
+
+    if t_row and reply:
+        import re
+        real_title = t_row["title"]
+        if fallback_task_id:
+            reply = re.sub(r"Task #\d+\s*(\([^)]+\))?", f"Task #{last_tid} ({real_title})", reply)
+        else:
+            def _fix_task_mention(m):
+                claimed = m.group(1).strip()
+                if claimed.lower() != real_title.lower() and not real_title.lower().startswith(claimed.lower()[:15]):
+                    return f"Task #{last_tid} ({real_title})"
+                return m.group(0)
+            reply = re.sub(rf"Task #{last_tid}\s*\(([^)]+)\)", _fix_task_mention, reply, flags=re.IGNORECASE)
 
     msg = reply or ("; ".join(applied) if applied else "Task schedule updated")
     app.toast(msg, "success")
@@ -560,7 +785,8 @@ def realign_task_subtask_order(app, task_id: int) -> list:
     return updated
 
 
-def move_block(app, block_id: int, new_start: str, new_end: str, preserve_subtask_order: bool = True) -> dict:
+def move_block(app, block_id: int, new_start: str, new_end: str, preserve_subtask_order: bool = True,
+               auto_nudge: bool = True) -> dict:
     b = app.db.one("SELECT * FROM blocks WHERE id=?", (block_id,))
     if not b:
         raise ValueError(f"Block #{block_id} not found")
@@ -573,6 +799,16 @@ def move_block(app, block_id: int, new_start: str, new_end: str, preserve_subtas
         raise ValueError("Invalid start/end timestamp (expected YYYY-MM-DDTHH:MM)")
     if e_dt <= s_dt:
         raise ValueError("A block must end after it starts")
+
+    dur_mins = max(15, int((e_dt - s_dt).total_seconds() // 60))
+    if auto_nudge:
+        conflicts = find_conflicting_events(app, s_dt, e_dt, exclude_block_id=block_id)
+        if conflicts:
+            free_s, free_e = find_nearest_free_slot(app, s_dt, dur_mins, exclude_block_id=block_id)
+            if free_s != s_dt:
+                c_names = ", ".join(c["title"] for c in conflicts[:2])
+                s_dt, e_dt = free_s, free_e
+                app.toast(f"Shifted block to {s_dt.strftime('%H:%M')}–{e_dt.strftime('%H:%M')} to avoid conflict with '{c_names}'", "info")
 
     ns_clean = s_dt.strftime("%Y-%m-%dT%H:%M")
     ne_clean = e_dt.strftime("%Y-%m-%dT%H:%M")
@@ -941,13 +1177,7 @@ def delete_task(app, task_id: int) -> bool:
     if not t:
         return False
 
-    blocks = app.db.q("SELECT event_id FROM blocks WHERE task_id=?", (task_id,))
-    for b in blocks:
-        if b.get("event_id"):
-            try:
-                app.cal.delete(b["event_id"])
-            except Exception:
-                pass
+    _clean_task_calendar_events(app, task_id)
 
     app.db.x("DELETE FROM blocks WHERE task_id=?", (task_id,))
     app.db.x("DELETE FROM subtasks WHERE task_id=?", (task_id,))

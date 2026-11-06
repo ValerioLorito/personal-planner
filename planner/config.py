@@ -151,6 +151,10 @@ def load(path: str = CONFIG_PATH) -> dict:
 
 
 def save(cfg: dict, path: str = CONFIG_PATH) -> None:
+    # Handle swapped arguments gracefully if invoked as save(path, cfg)
+    if isinstance(cfg, (str, bytes, os.PathLike)) and isinstance(path, dict):
+        cfg, path = path, str(cfg)
+    path = str(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

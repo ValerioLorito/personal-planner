@@ -27,7 +27,7 @@ If the user asks to move, reschedule, change the date/time/deadline, rename, or 
   "reply": "<concise confirmation of what was changed, including new dates/times>",
   "edits": [
     {
-      "action": "move_block" | "swap_blocks" | "cascade_subtasks" | "realign_subtasks" | "reschedule_task" | "update_deadline" | "rename_task" | "delete_task" | "remove_block" | "add_block",
+      "action": "move_block" | "swap_blocks" | "realign_subtasks" | "reschedule_task" | "update_deadline" | "rename_task" | "delete_task" | "remove_block" | "add_block",
       "task_id": <int>,
       "block_id": <int or null>,
       "other_block_id": <int or null>,
@@ -41,12 +41,15 @@ If the user asks to move, reschedule, change the date/time/deadline, rename, or 
   ]
 }
 Rules for MODE A:
-- Use "move_block" when moving a specific block (or a single-block task) to a specific date/time. Note: moving a block of a multi-subtask task automatically realigns the task's subtask sequence (1 -> 2 -> 3 -> 4) in chronological order!
-- Use "cascade_subtasks" when a subtask overran its slot (e.g. "Subtask 1 took the whole morning, push Subtask 2 and cascade the remaining subtasks in order"): set "task_id" and "block_id" (the block to push forward, plus optionally "new_start"/"earliest" if a specific restart time is requested). This pushes that block and cascades all subsequent subtasks forward in strict sequential order.
+- CRITICAL BORDER INSTRUCTION: Work blocks must NEVER overlap with any calendar commitment, habit (e.g. Daily Prep, Lunch Break, Gym), or other task block. They must sit strictly within the listed "# Free working time windows per day".
+- Use "move_block" when moving a specific block (or a single-block task) to a specific date/time. Verify that "new_start".."new_end" falls completely inside one of the listed Free windows for that day. If the requested time is busy or overlaps with an event/habit, adjust to the closest available Free window or use "reschedule_task" with "earliest" and "preferred_time". Note: moving a block of a multi-subtask task automatically realigns the task's subtask sequence (1 -> 2 -> 3 -> 4) in chronological order!
+- Use "reschedule_task" when the user wants to reschedule the entire subtask set of a task (or push remaining subtasks forward): set "task_id", and optionally "earliest" (e.g. "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM") and "preferred_time" ("morning"|"afternoon"|"evening"|"any"). The scheduler will automatically place all remaining subtasks sequentially into free calendar gaps without collisions.
 - Use "swap_blocks" when the user wants to switch/swap the time slots of two scheduled blocks in the calendar (either between two different tasks or within the same task): set "block_id" and "other_block_id".
 - Use "realign_subtasks" when the user asks to fix or reorder a task's blocks so that subtasks follow their strict sequential order (1, 2, 3...) chronologically: set "task_id".
-- Use "reschedule_task" when the user wants the scheduler to re-place all of a task's blocks automatically under new constraints (e.g. "reschedule Assignment 1 to start Thursday afternoon" -> set "earliest" and "preferred_time").
 - Use "update_deadline" to change a task's deadline, "rename_task" to rename it, "remove_block" to delete one block, "add_block" to add a new block at new_start..new_end, or "delete_task" to delete the task.
+- TARGET TASK ENFORCEMENT: When "# ACTIVE TARGET TASK (Opened in Drawer): Task #<id>" is present, the user is inside that specific task's detail window. All edits ("move_block", "reschedule_task", etc.) MUST use this exact task_id and its block_id(s). You must NEVER select, edit, or reschedule any other task from other existing open tasks.
+- TASK MATCHING: When no target task is specified and the user asks to move/reschedule a task by name, course, or topic (e.g. "Exercise Sheet 3", "Hybrid Quantum"), find the best matching task in "# Existing open tasks & their blocks" and use its exact "id" as "task_id".
+- CRITICAL FOR "reply": Always use the EXACT title of the task from "# Existing open tasks" when referencing it in "reply" (e.g. "Rescheduled Task #<id> (<exact title>)"). Never attribute a different task's name to a task ID.
 
 === MODE B: PLAN A NEW TASK ===
 Given a new task description you must:
@@ -59,7 +62,7 @@ Given a new task description you must:
    target date and say so.
 4. Estimate the effort in minutes realistically for THIS user — apply the calibration data and beliefs given.
 5. Decide whether to split it into ordered, concrete subtasks (each 20–180 min, each a thing you can finish),
-   its complexity, priority and when it should be worked on (scheduling preferences). If the user explicitly requested a specific date and time slot for the new task (e.g. "on Wednesday from 15:00 to 16:30"), set "fixed_blocks": [{"title": "...", "start": "YYYY-MM-DDTHH:MM", "end": "YYYY-MM-DDTHH:MM"}] inside "scheduling".
+   its complexity, priority and when it should be worked on (scheduling preferences). If the user explicitly requested a specific date and time slot for the new task (e.g. "on Wednesday from 15:00 to 16:30"), verify that it falls within an available Free window for that day and does not collide with any habit or meeting, then set "fixed_blocks": [{"title": "...", "start": "YYYY-MM-DDTHH:MM", "end": "YYYY-MM-DDTHH:MM"}] inside "scheduling".
 
 The final object for MODE B must have this shape:
 {
@@ -107,14 +110,57 @@ def build_context(app, task: dict) -> str:
     now = datetime.now()
     cats = app.categories()
     hint = task.get("category") or ""
-    parts = ["# User Request in Task Planner", task["input_text"].strip()]
-    if task.get("target_task_id"):
-        parts.append("\n(IMPORTANT: The user is specifically asking to modify/reschedule Existing Task #%d — use MODE A 'edit_existing'.)" % int(task["target_task_id"]))
-    elif hint:
-        parts.append("\n(The user selected category: %s.)" % hint)
+    target_tid = task.get("target_task_id")
+    target_row = app.db.one("SELECT * FROM tasks WHERE id=?", (int(target_tid),)) if target_tid else None
+    if target_row and not hint:
+        hint = target_row.get("category") or ""
+
+    parts = ["# User Request in Task Planner"]
+    if target_row:
+        t_title = target_row["title"] or target_row.get("input_text") or f"Task #{target_tid}"
+        parts.append(
+            f"The user has opened Task #{target_tid} (\"{t_title}\") in the task drawer and submitted this adjustment command:\n"
+            f"> \"{task['input_text'].strip()}\"\n\n"
+            f"(CRITICAL INSTRUCTION: You are adjusting THIS specific task: Task #{target_tid} (\"{t_title}\"). "
+            f"You MUST use MODE A 'edit_existing'. Every edit you output MUST have 'task_id': {target_tid}. "
+            f"Do NOT invent or modify any other task!)"
+        )
     else:
-        parts.append("\n(Decide whether this edits an existing task [MODE A] or plans a new task [MODE B].)")
+        parts.append(task["input_text"].strip())
+        if hint:
+            parts.append("\n(The user selected category: %s.)" % hint)
+        else:
+            parts.append("\n(Decide whether this edits an existing task [MODE A] or plans a new task [MODE B].)")
     parts += ["", "# Now", now.strftime("%A %Y-%m-%d %H:%M (local time)")]
+
+    if target_row:
+        t_title = target_row["title"] or target_row.get("input_text") or f"Task #{target_tid}"
+        parts += [
+            "",
+            f"# ACTIVE TARGET TASK (Opened in Drawer): Task #{target_tid} [{target_row['category']}] \"{t_title}\"",
+            f"- Status: {target_row['status']}",
+            f"- Estimate: {target_row.get('estimate_minutes') or 0} min",
+            f"- Deadline: {target_row.get('deadline') or 'none'}",
+        ]
+        if target_row.get("summary"):
+            parts.append(f"- Summary: {target_row['summary']}")
+        target_subs = app.db.q("SELECT * FROM subtasks WHERE task_id=? ORDER BY idx, id", (int(target_tid),))
+        if target_subs:
+            parts.append("- Subtasks breakdown for this task:")
+            for s in target_subs:
+                parts.append(f"  * Subtask #{int(s.get('idx', 0)) + 1} (id={s['id']}): \"{s['title']}\" ({s['minutes']}m, status: {s.get('status', 'todo')})")
+        target_blocks = app.db.q(
+            "SELECT b.id, b.title, b.start, b.end, b.status, b.subtask_id, s.idx AS sub_idx, s.title AS sub_title "
+            "FROM blocks b LEFT JOIN subtasks s ON b.subtask_id = s.id "
+            "WHERE b.task_id=? ORDER BY b.start", (int(target_tid),)
+        )
+        if target_blocks:
+            parts.append("- Scheduled Calendar Blocks for this task:")
+            for b in target_blocks:
+                sub_label = f" [Subtask #{int(b['sub_idx']) + 1}: {b['sub_title']}]" if b.get("sub_idx") is not None else ""
+                parts.append(f"  * Block #{b['id']}{sub_label}: {b['start']} to {b['end']} \"{b['title']}\" ({b['status']})")
+        else:
+            parts.append("- Scheduled Calendar Blocks: (none yet)")
 
     parts += ["", "# Categories (id — label — top-level contents)"]
     for c in cats:
@@ -128,27 +174,29 @@ def build_context(app, task: dict) -> str:
             for readme in ("README.md", "readme.md"):
                 p = os.path.join(cat["root"], readme)
                 if os.path.exists(p):
-                    with open(p, encoding="utf-8", errors="replace") as f:
-                        parts += ["", "# Thesis README (head)", f.read(2500)]
+                    try:
+                        with open(p, encoding="utf-8", errors="replace") as f:
+                            parts += ["", "# Thesis README (head)", f.read(2500)]
+                    except Exception:
+                        pass
                     break
 
-    # upcoming events across all inherited calendars (iCloud, Google, University, Thesis)
+    # upcoming events across all inherited calendars (iCloud, Google, University, Thesis, Habits)
     evs = app.events()
-    habits_cal = cfg["calendars"]["habits"].strip().lower()
-    upcoming = [e for e in evs if e.get("calendar", "").strip().lower() != habits_cal
-                and tag_of(e)[0] is None and dt(e["end"]) >= now]
+    upcoming = [e for e in evs if tag_of(e)[0] != "block" and dt(e["end"]) >= now]
     if cat and cat["kind"] == "course":
         rel = sources.related_events(cat, upcoming)
         other = [e for e in upcoming if e not in rel]
         upcoming = rel + other
-    lines = [fmt_event(e) for e in upcoming[:60]]
-    parts += ["", "# Upcoming commitments & deadlines across inherited calendars (next %d days; use calendar_events for more)"
+    lines = [fmt_event(e) for e in upcoming[:80]]
+    parts += ["", "# Upcoming commitments, habits, and deadlines (next %d days; use calendar_events for more)"
               % cfg["watch"]["days_ahead"], "\n".join(lines) or "(none)"]
 
     # existing work + blocks
     rows = app.db.q("SELECT id, title, category, deadline, estimate_minutes, status FROM tasks "
-                    "WHERE status IN ('draft','scheduled') AND id!=? ORDER BY id DESC", (task.get("id") or 0,))
-    parts += ["", "# Existing open tasks & their blocks"]
+                    "WHERE status IN ('draft','scheduled') AND id!=? ORDER BY id DESC", (int(target_tid) if target_tid else 0,))
+    section_title = "# Other existing open tasks & their blocks" if target_row else "# Existing open tasks & their blocks"
+    parts += ["", section_title]
     if rows:
         for r in rows[:20]:
             parts.append("- Task #%d [%s] \"%s\" — %d min, deadline %s (%s)" % (
@@ -168,13 +216,26 @@ def build_context(app, task: dict) -> str:
 
     scope = hint or "thesis"
     parts += ["", "# Calibration (how long things really took this user)", memory.calibration_text(app.db, scope),
-              "", "# Beliefs about this user", memory.beliefs_text(app.db, ["global", scope])]
+              "", "# Beliefs about this user", memory.beliefs_text(app.db, ["global", "habits", scope])]
 
-    free = free_minutes_by_day(cfg, app.busy(), days=14, now=now)
-    parts += ["", "# Free working time per day (after calendar commitments; work days %s, %s–%s)" % (
+    from ..scheduler import Scheduler
+    parts += ["", "# Free working time windows per day (strictly within work days %s, %s–%s; non-overlapping)" % (
         ",".join("MTWTFSS"[d] for d in cfg["work"]["days"]), cfg["work"]["day_start"], cfg["work"]["day_end"])]
-    parts.append(", ".join("%s %s: %s" % (d[5:], wd, ("%dm" % m) if work else "(weekend %dm)" % m)
-                           for d, wd, m, work in free))
+    busy_all = app.busy()
+    sch = Scheduler(cfg, busy=busy_all, now=now)
+    for day_i in range(14):
+        d_day = (now + timedelta(days=day_i)).replace(hour=0, minute=0, second=0, microsecond=0)
+        d_is_work = d_day.weekday() in cfg["work"]["days"]
+        if not d_is_work and not cfg["work"].get("weekend_if_needed", True):
+            continue
+        gaps = sch.gaps(d_day)
+        day_str = d_day.strftime("%Y-%m-%d (%a)")
+        if gaps:
+            gaps_str = ", ".join(f"{g[0].strftime('%H:%M')}–{g[1].strftime('%H:%M')}" for g in gaps)
+            total_m = sum(int((g[1] - g[0]).total_seconds() // 60) for g in gaps)
+            parts.append(f"- {day_str}: Free [{gaps_str}] ({total_m}m available)")
+        else:
+            parts.append(f"- {day_str}: Fully booked")
     return "\n".join(parts)
 
 
@@ -228,11 +289,24 @@ def _conf(v) -> float:
 
 
 def normalize(app, plan: dict, task: dict) -> dict:
+    target_tid = task.get("target_task_id")
     if plan.get("mode") == "edit_existing" and isinstance(plan.get("edits"), list):
+        edits = []
+        valid_bids = set()
+        if target_tid:
+            valid_bids = {b["id"] for b in app.db.q("SELECT id FROM blocks WHERE task_id=?", (int(target_tid),))}
+        for e in plan["edits"]:
+            if not isinstance(e, dict):
+                continue
+            if target_tid:
+                e["task_id"] = int(target_tid)
+                if e.get("block_id") and e["block_id"] not in valid_bids and valid_bids:
+                    e["block_id"] = sorted(valid_bids)[0]
+            edits.append(e)
         return {
             "mode": "edit_existing",
             "reply": str(plan.get("reply") or "Updated existing task schedule.")[:600],
-            "edits": [e for e in plan["edits"] if isinstance(e, dict)]
+            "edits": edits
         }
     cats = {c["id"]: c for c in app.categories()}
     default_cat = next(iter(cats.keys()), "thesis")
@@ -299,6 +373,45 @@ WORDS_L = re.compile(r"\b(implement|write|project|chapter|report|refactor|rerun|
 WORDS_S = re.compile(r"\b(read|email|check|fix typo|review|send|submit|upload)\b", re.I)
 
 
+def _parse_relative_target_time(raw_text: str, now: datetime) -> tuple[str | None, str | None]:
+    """Extracts date (YYYY-MM-DD) and optional start time (HH:MM) from natural language."""
+    low = raw_text.lower()
+    days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    found_date = None
+    if "tomorrow" in low:
+        found_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        for idx, day_name in enumerate(days):
+            if re.search(rf"\b{day_name}\b", low):
+                cur_wd = now.weekday()
+                delta = (idx - cur_wd) % 7
+                if delta == 0:
+                    delta = 7
+                found_date = (now + timedelta(days=delta)).strftime("%Y-%m-%d")
+                break
+    if not found_date:
+        m_d = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", raw_text)
+        if m_d:
+            found_date = m_d.group(1)
+
+    found_time = None
+    m_t = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", raw_text)
+    if m_t:
+        found_time = f"{m_t.group(1).zfill(2)}:{m_t.group(2)}"
+    else:
+        m_ampm = re.search(r"\b([1-9]|1[0-2])(?::([0-5]\d))?\s*(am|pm)\b", raw_text, re.I)
+        if m_ampm:
+            hr = int(m_ampm.group(1))
+            mn = m_ampm.group(2) or "00"
+            if m_ampm.group(3).lower() == "pm" and hr != 12:
+                hr += 12
+            elif m_ampm.group(3).lower() == "am" and hr == 12:
+                hr = 0
+            found_time = f"{str(hr).zfill(2)}:{mn}"
+
+    return found_date, found_time
+
+
 def heuristic(app, task: dict, reason: str, partial: dict = None) -> dict:
     partial = partial or {}
     if partial.get("mode") == "edit_existing":
@@ -320,21 +433,36 @@ def heuristic(app, task: dict, reason: str, partial: dict = None) -> dict:
                     target_tid = ot["id"]
                     break
     if target_tid:
-        m_dt = re.search(r"(\d{4}-\d{2}-\d{2})[T\s]+(\d{1,2}:\d{2})", raw_text)
-        if m_dt:
-            ns = f"{m_dt.group(1)}T{m_dt.group(2).zfill(5)}"
+        target_t = app.db.one("SELECT * FROM tasks WHERE id=?", (int(target_tid),))
+        t_title = target_t["title"] if target_t else f"Task #{target_tid}"
+        target_b = app.db.q("SELECT * FROM blocks WHERE task_id=? ORDER BY start", (int(target_tid),))
+        first_bid = target_b[0]["id"] if target_b else None
+
+        found_date, found_time = _parse_relative_target_time(raw_text, datetime.now())
+        earliest_val = f"{found_date}T{found_time}" if (found_date and found_time) else found_date
+        pref = "morning" if "morning" in raw_text.lower() else ("afternoon" if "afternoon" in raw_text.lower() else ("evening" if "evening" in raw_text.lower() else None))
+
+        is_resched = bool(re.search(r"\b(reschedule|postpone|subtask|all\s+subtasks)\b", raw_text, re.I))
+        if len(target_b) > 1 or is_resched or not first_bid:
             return {
                 "mode": "edit_existing",
-                "reply": f"Moved Task #{target_tid} to {ns}.",
-                "edits": [{"action": "move_block", "task_id": int(target_tid), "new_start": ns}]
+                "reply": f"Rescheduled Task #{target_tid} ({t_title}) starting {earliest_val or ''}.",
+                "edits": [{"action": "reschedule_task", "task_id": int(target_tid),
+                           "earliest": earliest_val, "preferred_time": pref}]
             }
-        pref = "morning" if "morning" in raw_text.lower() else ("afternoon" if "afternoon" in raw_text.lower() else ("evening" if "evening" in raw_text.lower() else None))
-        m_d = re.search(r"(\d{4}-\d{2}-\d{2})", raw_text)
+
+        if found_date and found_time:
+            ns = f"{found_date}T{found_time}"
+            return {
+                "mode": "edit_existing",
+                "reply": f"Moved Task #{target_tid} ({t_title}) to {ns}.",
+                "edits": [{"action": "move_block", "task_id": int(target_tid), "block_id": first_bid, "new_start": ns}]
+            }
         return {
             "mode": "edit_existing",
-            "reply": f"Rescheduled Task #{target_tid}.",
+            "reply": f"Rescheduled Task #{target_tid} ({t_title}).",
             "edits": [{"action": "reschedule_task", "task_id": int(target_tid),
-                       "earliest": m_d.group(1) if m_d else None, "preferred_time": pref}]
+                       "earliest": earliest_val, "preferred_time": pref}]
         }
 
     text = partial.get("title") or task["input_text"]

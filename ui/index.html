@@ -473,11 +473,22 @@
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
                 <button type="button" class="btn btn-sm btn-secondary" id="m-ev-btn-resched" style="display:none" title="Move this block to the next free slot (subtasks automatically realign in sequential order)">⇄ Next Free Slot</button>
-                <button type="button" class="btn btn-sm btn-secondary" id="m-ev-btn-cascade" style="display:none" title="Push this subtask forward and cascade all following subtasks of this task in strict sequential order">⇣ Push &amp; Cascade Subtasks</button>
               </div>
             </div>
           </div>
           <div class="resched-warn" id="m-ev-warn"></div>
+
+          <!-- Ask AI to Reschedule Task Subtasks -->
+          <div id="m-ev-ai-resched-sec" class="form-group" style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--r-md)">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+              <label for="m-ev-ai-input" style="font-weight:600;font-size:12px;margin-bottom:0">✨ Reschedule Task Subtasks with AI</label>
+              <span id="m-ev-ai-task-badge" style="font-size:11px;color:var(--text-muted)"></span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <input type="text" id="m-ev-ai-input" class="input-text flex-1" placeholder="e.g. Reschedule remaining subtasks to Monday morning, or push to tomorrow..." autocomplete="off">
+              <button type="button" class="btn btn-sm btn-primary" id="m-ev-btn-ai-resched" style="white-space:nowrap">Reschedule with AI</button>
+            </div>
+          </div>
 
           <!-- Switch / Swap Slot with another Task Block -->
           <div id="m-ev-swap-group" class="form-group" style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--r-md)">

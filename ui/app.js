@@ -1231,8 +1231,15 @@ function initTasksView() {
       if (!S.activeTaskId) return;
       const text = drawerAiInput.value.trim();
       if (!text) return showToast('Type how you want to adjust this task', 'warning');
+      const curTask = (S.tasks || []).find(x => x.id === S.activeTaskId);
+      const cat = curTask ? curTask.category : '';
       drawerAiInput.value = '';
-      startTaskPlanning(text, '', S.activeTaskId);
+      btnDrawerAi.disabled = true;
+      btnDrawerAi.textContent = 'Adjusting...';
+      startTaskPlanning(text, cat, S.activeTaskId).finally(() => {
+        btnDrawerAi.disabled = false;
+        btnDrawerAi.textContent = 'Adjust with AI';
+      });
     });
     drawerAiInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') btnDrawerAi.click();
@@ -1544,29 +1551,10 @@ function renderTaskDrawer(taskId) {
           <div class="br-time">${fmtNice(bs)} · ${fmtTime(bs)}–${fmtTime(be)}</div>
         </div>
         <div style="display:flex;gap:4px">
-          ${blocks.length > 1 ? `<button class="btn btn-sm btn-secondary btn-cascade-b" title="Push this subtask forward and cascade all following subtasks in sequential order">⇣ Cascade</button>` : ''}
           <button class="btn btn-sm btn-secondary btn-move" title="Change day / time">Reschedule</button>
           <button class="btn btn-sm btn-icon btn-del-b" title="Unschedule this block">✕</button>
         </div>
       `;
-      const btnCasc = bRow.querySelector('.btn-cascade-b');
-      if (btnCasc) {
-        btnCasc.addEventListener('click', async () => {
-          btnCasc.disabled = true;
-          try {
-            const res = await api(`/api/tasks/${t.id}/cascade_block`, {
-              method: 'POST',
-              body: { block_id: b.id }
-            });
-            showToast(res.summary || 'Pushed & cascaded subtasks in order', 'success');
-            loadState();
-          } catch (err) {
-            showToast('Cascade failed: ' + err.message, 'error');
-          } finally {
-            btnCasc.disabled = false;
-          }
-        });
-      }
       bRow.querySelector('.btn-move').addEventListener('click', () => openRescheduleDialog(t, b));
       bRow.querySelector('.btn-del-b').addEventListener('click', async () => {
         const ok = await uiConfirm('Unschedule this block from calendar?', 'Unschedule Block');
@@ -3252,7 +3240,8 @@ function initEventInspector() {
   const btnLogHabit = document.getElementById('m-ev-btn-log-habit');
   const btnEditHabit = document.getElementById('m-ev-btn-edit-habit');
   const btnResched = document.getElementById('m-ev-btn-resched');
-  const btnCascade = document.getElementById('m-ev-btn-cascade');
+  const btnAiResched = document.getElementById('m-ev-btn-ai-resched');
+  const inputAiResched = document.getElementById('m-ev-ai-input');
   const btnSwap = document.getElementById('m-ev-btn-swap');
 
   if (!modal) return;
@@ -3319,28 +3308,29 @@ function initEventInspector() {
     });
   }
 
-  if (btnCascade) {
-    btnCascade.addEventListener('click', async () => {
+  if (btnAiResched && inputAiResched) {
+    const runCalendarAiResched = async () => {
       if (!currentInspectedEvent || !currentInspectedEvent.task_id) return;
-      const item = currentInspectedEvent;
-      btnCascade.disabled = true;
+      const text = inputAiResched.value.trim();
+      if (!text) return showToast('Type how you want to reschedule this task', 'warning');
+      const tid = currentInspectedEvent.task_id;
+      const cat = currentInspectedEvent.category || (currentInspectedEvent._linkedTask ? currentInspectedEvent._linkedTask.category : '');
+      btnAiResched.disabled = true;
+      btnAiResched.textContent = 'Adjusting...';
+      closeModal();
+      showToast('Agent is rescheduling task subtasks...', 'info');
       try {
-        const res = await api(`/api/tasks/${item.task_id}/cascade_block`, {
-          method: 'POST',
-          body: {
-            task_id: item.task_id,
-            block_id: item.block_id || null,
-            event_id: item.id || null
-          }
-        });
-        showToast(res.summary || 'Pushed & cascaded subtasks in sequential order', 'success');
-        closeModal();
-        loadState();
-      } catch (e) {
-        showToast('Failed to cascade subtasks: ' + e.message, 'error');
+        await startTaskPlanning(text, cat, tid);
+      } catch (err) {
+        showToast('Reschedule failed: ' + err.message, 'error');
       } finally {
-        btnCascade.disabled = false;
+        btnAiResched.disabled = false;
+        btnAiResched.textContent = 'Reschedule with AI';
       }
+    };
+    btnAiResched.addEventListener('click', runCalendarAiResched);
+    inputAiResched.addEventListener('keydown', e => {
+      if (e.key === 'Enter') runCalendarAiResched();
     });
   }
 
@@ -3696,7 +3686,6 @@ function openEventInspector(item, isBlock = false) {
   const seriesBtn = document.getElementById('m-ev-btn-delete-series');
   const btnSave = document.getElementById('m-ev-btn-save');
   const btnResched = document.getElementById('m-ev-btn-resched');
-  const btnCascade = document.getElementById('m-ev-btn-cascade');
   const swapGroup = document.getElementById('m-ev-swap-group');
   const swapSelect = document.getElementById('m-ev-swap-select');
 
@@ -3714,10 +3703,20 @@ function openEventInspector(item, isBlock = false) {
     btnResched.style.display = (isWritable && !enriched.all_day) ? 'inline-flex' : 'none';
   }
 
-  if (btnCascade) {
-    const taskBlocksCount = (info.linkedTask && Array.isArray(info.linkedTask.blocks)) ? info.linkedTask.blocks.length : 0;
-    const taskSubsCount = (info.linkedTask && Array.isArray(info.linkedTask.subtasks)) ? info.linkedTask.subtasks.length : 0;
-    btnCascade.style.display = (isWritable && enriched.task_id && (taskBlocksCount > 1 || taskSubsCount > 1)) ? 'inline-flex' : 'none';
+  const aiSec = document.getElementById('m-ev-ai-resched-sec');
+  const aiBadge = document.getElementById('m-ev-ai-task-badge');
+  const aiInput = document.getElementById('m-ev-ai-input');
+  if (aiSec) {
+    if (enriched.task_id) {
+      aiSec.style.display = 'block';
+      if (aiBadge) {
+        const taskTitle = (info.linkedTask && info.linkedTask.title) ? info.linkedTask.title : `Task #${enriched.task_id}`;
+        aiBadge.textContent = `Task #${enriched.task_id} (${taskTitle})`;
+      }
+      if (aiInput) aiInput.value = '';
+    } else {
+      aiSec.style.display = 'none';
+    }
   }
 
   // Populate Swap Slot selector if this is a Task Block

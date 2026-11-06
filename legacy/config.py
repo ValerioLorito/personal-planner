@@ -92,6 +92,10 @@ def load(path):
 
 
 def save(path, cfg):
+    # Handle swapped arguments gracefully if invoked as save(cfg, path)
+    if isinstance(path, dict) and isinstance(cfg, (str, bytes, os.PathLike)):
+        path, cfg = cfg, path
+    path = str(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)

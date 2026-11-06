@@ -119,10 +119,18 @@ class Scheduler:
         margin = timedelta(hours=w["deadline_margin_hours"])
         horizon = self.now + timedelta(days=w["horizon_days"])
         start_day = self.now
+        earliest_has_time = False
         if earliest:
-            e0 = parse_deadline(str(earliest)[:10])
-            if e0:
-                start_day = max(self.now, e0.replace(hour=0, minute=0))
+            e_str = str(earliest).strip()
+            if ":" in e_str:
+                e0 = parse_deadline(e_str)
+                if e0:
+                    earliest_has_time = True
+                    start_day = max(self.now, e0)
+            else:
+                e0 = parse_deadline(e_str[:10])
+                if e0:
+                    start_day = max(self.now, e0.replace(hour=0, minute=0, second=0, microsecond=0))
         warnings = []
 
         def attempt(limit, weekends, task_cap):
@@ -160,6 +168,8 @@ class Scheduler:
                             s, e = gs, gs + timedelta(minutes=take)
                             if pref == "evening" and gap_min > take:
                                 s, e = ge - timedelta(minutes=take), ge
+                                if s < cursor:
+                                    s, e = gs, gs + timedelta(minutes=take)
                             if e > limit:
                                 continue
                             part += 1
@@ -182,19 +192,25 @@ class Scheduler:
             return blocks, busy, load
 
         original_busy = list(self.busy)
+        earliest_is_weekend = (earliest is not None and start_day.weekday() not in self.w["days"])
         tries = []
         if deadline_dt:
             hard = deadline_dt - margin if deadline_dt - margin > self.now else deadline_dt
             horizon = max(horizon, deadline_dt + timedelta(days=14))
+            if earliest_is_weekend:
+                tries.append((hard, True, w["max_task_day_min"] if spread else w["max_day_min"], None))
             tries.append((hard, False, w["max_task_day_min"] if spread else w["max_day_min"], None))
-            if w.get("weekend_if_needed", True):
+            if w.get("weekend_if_needed", True) and not earliest_is_weekend:
                 tries.append((hard, True, w["max_task_day_min"], "uses the weekend to meet the deadline"))
             tries.append((deadline_dt, True, w["max_day_min"],
                           "packed tightly (less than %dh margin before the deadline)" % w["deadline_margin_hours"]))
             tries.append((horizon, True, w["max_day_min"], "DOES NOT FIT before the deadline — some work lands after it"))
         else:
+            if earliest_is_weekend:
+                tries.append((horizon, True, w["max_task_day_min"] if spread else w["max_day_min"], None))
             tries.append((horizon, False, w["max_task_day_min"] if spread else w["max_day_min"], None))
-            tries.append((horizon, True, w["max_day_min"], "uses weekends (weekdays are full)"))
+            if not earliest_is_weekend:
+                tries.append((horizon, True, w["max_day_min"], "uses weekends (weekdays are full)"))
         for limit, weekends, cap, note in tries:
             self.busy = list(original_busy)
             blocks, busy, load = attempt(limit, weekends, cap)

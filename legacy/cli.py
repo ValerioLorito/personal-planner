@@ -631,7 +631,7 @@ def cmd_config(args):
             for p in parts[:-1]:
                 node = node.setdefault(p, {})
             node[parts[-1]] = val
-        config_mod.save(str(CFG), cfg)
+        config_mod.save(cfg, str(CFG))
         print(f"saved {CFG}")
     print(json.dumps(cfg, indent=2))
 
