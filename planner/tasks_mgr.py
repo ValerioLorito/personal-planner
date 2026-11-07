@@ -1071,12 +1071,14 @@ def complete_subtask(app, subtask_id: int, actual_minutes: int = None, done: boo
             "actual_minutes": None,
             "done_at": ""
         })
+        app.db.x("UPDATE blocks SET status='scheduled' WHERE subtask_id=? AND status='done'", (subtask_id,))
         # Remove the calibration sample for this subtask when unchecked/reopened
         memory.remove_sample_by_ref(app.db, "task", f"subtask:{subtask_id}")
         if task and task.get("status") == "done":
             has_sched = bool(app.db.q("SELECT id FROM blocks WHERE task_id=? AND status='scheduled'", (s["task_id"],)))
             app.db.update("tasks", s["task_id"], {"status": "scheduled" if has_sched else "draft", "updated_at": now})
         app.notify("tasks_changed", {"action": "subtask_reopened", "id": s["task_id"]})
+        app.notify("events_changed", {"action": "subtask_reopened", "id": s["task_id"]})
         return get_task_full(app, s["task_id"])
 
     logged_mins = int(actual_minutes) if actual_minutes else int(s["minutes"] or 30)
@@ -1085,11 +1087,13 @@ def complete_subtask(app, subtask_id: int, actual_minutes: int = None, done: boo
         "actual_minutes": logged_mins,
         "done_at": now
     })
+    app.db.x("UPDATE blocks SET status='done' WHERE subtask_id=?", (subtask_id,))
 
     # Check if all subtasks are done
     all_subs = app.db.q("SELECT status FROM subtasks WHERE task_id=?", (s["task_id"],))
     if all(r["status"] == "done" for r in all_subs):
         app.db.update("tasks", s["task_id"], {"status": "done", "updated_at": now})
+        app.db.x("UPDATE blocks SET status='done' WHERE task_id=? AND status='scheduled'", (s["task_id"],))
 
     # Record or update single calibration sample for this subtask (upserts by ref)
     if task:
@@ -1098,6 +1102,7 @@ def complete_subtask(app, subtask_id: int, actual_minutes: int = None, done: boo
         app.toast(f"Subtask '{s['title']}' logged ({logged_mins}m) — calibration updated", "info")
 
     app.notify("tasks_changed", {"action": "subtask_done", "id": s["task_id"]})
+    app.notify("events_changed", {"action": "subtask_done", "id": s["task_id"]})
     return get_task_full(app, s["task_id"])
 
 

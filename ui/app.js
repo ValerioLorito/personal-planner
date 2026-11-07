@@ -925,6 +925,39 @@ function getTileSizeClass(height) {
   return 'tile-lg';
 }
 
+function getBlockCategory(item, isBlock = false) {
+  const cal = ((item && item.calendar) || '').toLowerCase();
+  if (cal.includes('thesis')) return 'thesis';
+  if (cal.includes('uni') || cal.includes('erasmus') || cal.includes('sapienza') || cal.includes('course')) return 'university';
+  const info = extractEventRichInfo(item, isBlock);
+  if (info.linkedTask) {
+    if (info.linkedTask.category === 'thesis') return 'thesis';
+    const catObj = (S.categories || []).find(c => c.id === info.linkedTask.category);
+    if (catObj && catObj.kind === 'thesis') return 'thesis';
+    return 'university';
+  }
+  return 'thesis';
+}
+
+function isBlockSubtaskDone(item, isBlock = false) {
+  if (!item) return false;
+  if (item.status === 'done') return true;
+  const info = extractEventRichInfo(item, isBlock);
+  if (info.verifiedBlock && info.verifiedBlock.status === 'done') return true;
+  if (info.linkedTask) {
+    if (info.linkedTask.status === 'done') return true;
+    const subId = info.verifiedBlock ? info.verifiedBlock.subtask_id : item.subtask_id;
+    if (subId) {
+      const sub = (info.linkedTask.subtasks || []).find(s => s.id === subId);
+      if (sub && (sub.status === 'done' || sub.done)) return true;
+    }
+    const title = item.title || '';
+    const matched = (info.linkedTask.subtasks || []).find(s => (s.status === 'done' || s.done) && s.title && title.includes(s.title));
+    if (matched) return true;
+  }
+  return false;
+}
+
 function createEventTile(e, startHour, hourHeight, type, headerOffset = 36, colIdx = 0, numCols = 1) {
   try {
     const s = new Date(e.start);
@@ -936,9 +969,12 @@ function createEventTile(e, startHour, hourHeight, type, headerOffset = 36, colI
 
     const info = extractEventRichInfo(e, false);
     const sizeClass = getTileSizeClass(height);
+    const isBlock = type === 'block';
+    const catClass = isBlock ? (getBlockCategory(e, false) === 'university' ? 'block-uni' : 'block-thesis') : '';
+    const isDone = isBlock && isBlockSubtaskDone(e, false);
 
     const tile = document.createElement('div');
-    tile.className = `cal-event-tile ${type} ${sizeClass}`;
+    tile.className = `cal-event-tile ${type} ${catClass} ${isDone ? 'is-done' : ''} ${sizeClass}`.trim();
     tile.dataset.start = e.start;
     tile.dataset.end = e.end;
     tile.style.top = `${top}px`;
@@ -964,10 +1000,12 @@ function createEventTile(e, startHour, hourHeight, type, headerOffset = 36, colI
     }
 
     const metaHtml = metaPills.length > 0 ? `<div class="tile-meta">${metaPills.join('')}</div>` : '';
+    const checkIcon = isDone ? '<span class="tile-check-icon">✓</span>' : '';
+    const doneTag = isDone ? ' · <span class="tile-done-badge">Completed</span>' : '';
 
     tile.innerHTML = `
-      <div class="tile-title">${escapeHtml(e.title || 'Event')}</div>
-      <div class="tile-time">${e.start.slice(11,16)}–${e.end.slice(11,16)}${showCalTag ? ` · <span class="tile-cal-badge">${escapeHtml(calName)}</span>` : ''}</div>
+      <div class="tile-title">${checkIcon}<span class="tile-text">${escapeHtml(e.title || 'Event')}</span></div>
+      <div class="tile-time">${e.start.slice(11,16)}–${e.end.slice(11,16)}${showCalTag ? ` · <span class="tile-cal-badge">${escapeHtml(calName)}</span>` : ''}${doneTag}</div>
       ${metaHtml}
     `;
     tile.addEventListener('click', () => {
@@ -989,9 +1027,11 @@ function createBlockTile(b, startHour, hourHeight, headerOffset = 36, colIdx = 0
     const height = Math.max(22, ((endMins - startMins) / 60) * hourHeight);
 
     const sizeClass = getTileSizeClass(height);
+    const catClass = getBlockCategory(b, true) === 'university' ? 'block-uni' : 'block-thesis';
+    const isDone = isBlockSubtaskDone(b, true);
 
     const tile = document.createElement('div');
-    tile.className = `cal-event-tile block ${sizeClass}`;
+    tile.className = `cal-event-tile block ${catClass} ${isDone ? 'is-done' : ''} ${sizeClass}`.trim();
     tile.dataset.start = b.start;
     tile.dataset.end = b.end;
     tile.style.top = `${top}px`;
@@ -1006,9 +1046,12 @@ function createBlockTile(b, startHour, hourHeight, headerOffset = 36, colIdx = 0
       tile.style.width = `calc(${wPct}% - 2px)`;
     }
 
+    const checkIcon = isDone ? '<span class="tile-check-icon">✓</span>' : '';
+    const doneTag = isDone ? ' · <span class="tile-done-badge">Completed</span>' : '';
+
     tile.innerHTML = `
-      <div class="tile-title">${escapeHtml(b.title)}</div>
-      <div class="tile-time">${b.start.slice(11,16)}–${b.end.slice(11,16)} ${b.isProposed ? '(Draft)' : ''}</div>
+      <div class="tile-title">${checkIcon}<span class="tile-text">${escapeHtml(b.title)}</span></div>
+      <div class="tile-time">${b.start.slice(11,16)}–${b.end.slice(11,16)}${b.isProposed ? ' (Draft)' : ''}${doneTag}</div>
     `;
     tile.addEventListener('click', () => {
       openEventInspector(b, true);
@@ -1037,22 +1080,27 @@ function renderTodayRail() {
       const item = document.createElement('div');
       const isHabit = (e.calendar || '').toLowerCase().includes('habits');
       const isBlock = (e.notes || '').includes('planner:block=');
+      const catClass = isBlock ? (getBlockCategory(e, false) === 'university' ? 'block-uni' : 'block-thesis') : '';
+      const isDone = isBlock && isBlockSubtaskDone(e, false);
       const isAllDay = isAllDayOrMultiDay(e);
       const stMs = e.start ? new Date(e.start).getTime() : 0;
       const enMs = e.end ? new Date(e.end).getTime() : 0;
       const isOngoing = !isAllDay && stMs <= nowMs && enMs > nowMs;
       const isPast = !isAllDay && enMs > 0 && enMs <= nowMs;
       const info = extractEventRichInfo(e, false);
-      item.className = `timeline-item ${isBlock ? 'block' : (isHabit ? 'habit' : 'meeting')}${isOngoing ? ' is-ongoing' : ''}${isPast ? ' is-past' : ''}`;
+      item.className = `timeline-item ${isBlock ? 'block ' + catClass : (isHabit ? 'habit' : 'meeting')}${isOngoing ? ' is-ongoing' : ''}${isPast ? ' is-past' : ''}${isDone ? ' is-done' : ''}`;
       item.style.cursor = 'pointer';
       const timeLabel = isAllDay ? 'All day' : `${e.start.slice(11,16)}–${e.end.slice(11,16)}`;
       const calLabel = e.calendar ? ` <span class="tile-cal-badge">[${escapeHtml(e.calendar.trim())}]</span>` : '';
       const nowTag = isOngoing ? '<span class="now-pill-tag">NOW</span>' : '';
+      const checkTag = isDone ? '<span style="color:var(--success-text);font-weight:700;margin-right:2px">✓</span> ' : '';
+      const doneTag = isDone ? ' <span class="tile-done-badge" style="margin-left:4px">Completed</span>' : '';
       const extraBadges = [
         info.videoUrl ? `<span class="tile-cal-badge" style="color:var(--accent)">🎥 ${escapeHtml(info.videoProvider || 'Call')}</span>` : '',
         info.cleanLocation ? `<span class="tile-cal-badge">📍 ${escapeHtml(info.cleanLocation)}</span>` : ''
       ].filter(Boolean).join(' ');
-      item.innerHTML = `${nowTag}<strong>${timeLabel}</strong> ${escapeHtml(e.title)}${calLabel}${extraBadges ? `<div style="margin-top:2px;font-size:10px;color:var(--text-muted)">${extraBadges}</div>` : ''}`;
+      const titleHtml = isDone ? `<span class="timeline-title-text" style="text-decoration:line-through;opacity:0.85">${escapeHtml(e.title)}</span>` : `<span class="timeline-title-text">${escapeHtml(e.title)}</span>`;
+      item.innerHTML = `${nowTag}${checkTag}<strong>${timeLabel}</strong> ${titleHtml}${calLabel}${doneTag}${extraBadges ? `<div style="margin-top:2px;font-size:10px;color:var(--text-muted)">${extraBadges}</div>` : ''}`;
       item.addEventListener('click', () => openEventInspector(e, false));
       container.appendChild(item);
     });
@@ -1328,22 +1376,22 @@ function renderTasksList() {
 
   tasks.forEach(t => {
     const card = document.createElement('div');
-    card.className = 'task-card';
     const catObj = (S.categories || []).find(c => c.id === t.category);
-    const isPrimary = t.category === 'thesis' || (catObj && catObj.kind !== 'course');
+    const isThesis = t.category === 'thesis' || (catObj && catObj.kind === 'thesis');
+    card.className = `task-card ${isThesis ? 'task-card-thesis' : 'task-card-uni'}`;
     const catLabel = formatCategoryLabel(t.category);
 
     card.innerHTML = `
       <div class="task-card-top">
         <span class="task-card-title">${escapeHtml(t.title || t.input_text)}</span>
         <div style="display:flex;gap:4px;align-items:center">
-          <span class="pill pill-${t.status === 'scheduled' ? 'thesis' : 'cx'}">${t.status}</span>
+          <span class="pill pill-${t.status === 'scheduled' ? (isThesis ? 'thesis' : 'course') : 'cx'}">${t.status}</span>
           <button class="btn btn-sm btn-icon btn-card-rename" title="Rename Task">✎</button>
           <button class="btn btn-sm btn-icon btn-card-del" title="Delete Task">✕</button>
         </div>
       </div>
       <div class="task-badges">
-        <span class="pill ${isPrimary ? 'pill-thesis' : 'pill-course'}">${escapeHtml(catLabel)}</span>
+        <span class="pill ${isThesis ? 'pill-thesis' : 'pill-course'}">${escapeHtml(catLabel)}</span>
         <span class="pill pill-cx">${t.complexity || 'M'} · ~${t.estimate_minutes || 60}m</span>
         ${t.deadline ? `<span class="pill pill-deadline" style="cursor:pointer" title="Click to edit deadline">Due ${t.deadline.slice(5,16).replace('T',' ')}</span>` : ''}
         ${t.deep_work ? '<span class="pill pill-cx">Deep Work</span>' : ''}
@@ -3574,8 +3622,10 @@ function openEventInspector(item, isBlock = false) {
   const headerTitle = document.getElementById('m-ev-calendar-title');
   if (typeBadge) {
     if (enriched.task_id || isBlock) {
-      typeBadge.textContent = isBlock && item.isProposed ? 'Draft Block' : 'Task Block';
-      typeBadge.className = 'ev-type-pill block';
+      const isUni = getBlockCategory(enriched, isBlock) === 'university';
+      const label = isBlock && item.isProposed ? 'Draft Block' : 'Task Block';
+      typeBadge.textContent = `${label} · ${isUni ? 'University' : 'Thesis'}`;
+      typeBadge.className = `ev-type-pill block ${isUni ? 'block-uni' : 'block-thesis'}`;
     } else if (enriched.habit_id || (enriched.calendar || '').toLowerCase().includes('habits')) {
       typeBadge.textContent = 'Habit';
       typeBadge.className = 'ev-type-pill habit';

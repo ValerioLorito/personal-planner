@@ -144,5 +144,28 @@ class TestTasks(unittest.TestCase):
         tasks_mgr.reschedule_task_blocks(self.app, tid, earliest="2026-11-07T11:20")
         self.assertIn(ghost_eid, deleted_events)
 
+    def test_subtask_completion_syncs_block_status(self):
+        task = tasks_mgr.submit_task_input(self.app, "Write thesis chapter 3 and verify benchmarks", category="thesis")
+        tid = task["id"]
+        subs = self.app.db.q("SELECT * FROM subtasks WHERE task_id=? ORDER BY idx", (tid,))
+        self.assertTrue(len(subs) >= 1)
+        sid = subs[0]["id"]
+
+        # Mark subtask done
+        tasks_mgr.complete_subtask(self.app, sid, actual_minutes=45, done=True)
+        sub_row = self.app.db.one("SELECT status FROM subtasks WHERE id=?", (sid,))
+        self.assertEqual(sub_row["status"], "done")
+        block_row = self.app.db.one("SELECT status FROM blocks WHERE subtask_id=?", (sid,))
+        if block_row:
+            self.assertEqual(block_row["status"], "done")
+
+        # Reopen subtask
+        tasks_mgr.complete_subtask(self.app, sid, done=False)
+        sub_row = self.app.db.one("SELECT status FROM subtasks WHERE id=?", (sid,))
+        self.assertEqual(sub_row["status"], "todo")
+        block_row = self.app.db.one("SELECT status FROM blocks WHERE subtask_id=?", (sid,))
+        if block_row:
+            self.assertEqual(block_row["status"], "scheduled")
+
 if __name__ == "__main__":
     unittest.main()
